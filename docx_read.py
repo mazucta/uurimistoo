@@ -11,6 +11,7 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 TWIP_CM = 567.0          # твипов в сантиметре
 MAX_ZIP = 60 * 1024 * 1024   # распакованный .docx больше этого не читаем
+CAPTION = ("таблица", "рисунок", "tabel", "joonis", "фото", "схема", "диаграмма")  # подписи стоят по центру
 CITATION = re.compile(r"\([^()]{2,90}?(?:\d{4}|lk\.?\s*\d|с\.\s*\d)[^()]{0,25}\)|\[\d{1,3}(?:[,;]\s*[^\]]{0,20})?\]")
 URL = re.compile(r"https?://[^\s,;)\]]+|www\.[^\s,;)\]]+")
 SOURCE_HEADS = ("список", "kasutatud", "allika", "литератур", "kirjandus", "references", "використ")
@@ -79,7 +80,8 @@ class Doc:
         self.defaults = self._defaults()
         self.styles = {attr(s, "styleId"): s for s in self.styles_xml.iter(W + "style")} if self.styles_xml is not None else {}
         self.resolved = {}
-        self.paragraphs = [self._paragraph(p) for p in doc.find(W + "body").iter(W + "p")]
+        in_table = {id(p) for t in doc.iter(W + "tbl") for p in t.iter(W + "p")}
+        self.paragraphs = [self._paragraph(p, id(p) in in_table) for p in doc.find(W + "body").iter(W + "p")]
         self.margins = self._margins(doc)
         self.updates_fields = settings is not None and settings.find(W + "updateFields") is not None
         self.rel_targets = {attr(r, "Id"): r.get("Target") for r in rels} if rels is not None else {}
@@ -107,7 +109,7 @@ class Doc:
         self.resolved[style_id] = out
         return out
 
-    def _paragraph(self, p):
+    def _paragraph(self, p, in_table=False):
         ppr = p.find(W + "pPr")
         direct = para_props(ppr)
         style = self._style(direct.get("style"))
@@ -118,7 +120,7 @@ class Doc:
         sized = [(len(t.strip()), rp) for t, rp in runs if t.strip()]
         main = max(sized, key=lambda x: x[0])[1] if sized else {}
         out = {**self.defaults, **style, **direct, **{k: v for k, v in main.items()},
-               "text": text.strip(), "runs": runs,
+               "text": text.strip(), "runs": runs, "in_table": in_table,
                "page_break": direct.get("page_break", style.get("page_break", False))
                              or any(attr(br, "type") == "page" for br in p.iter(W + "br"))}
         name = out.get("style_name", "")
@@ -214,4 +216,5 @@ if __name__ == "__main__":
     assert len(d.citations()) == 2, d.citations()
     assert d.sources() == ["1. Иванов И. Энергия зданий. 2021. https://err.ee/uurimus"], d.sources()
     assert d.page_numbering() is None
+    assert not any(p["in_table"] for p in d.paragraphs)
     print("ok")

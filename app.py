@@ -174,7 +174,9 @@ def format_checks(doc, lang_):
         (t("Шрифт Times New Roman"), lambda p: (p.get("font") or "").lower().startswith("times new roman")),
         (t("Кегль 12"), lambda p: near(p.get("size"), 12, 0.5)),
         (t("Междустрочный интервал 1,5"), lambda p: near(p.get("line"), 360, 15) and p.get("line_rule") != "exact"),
-        (t("Выравнивание по ширине"), lambda p: p.get("jc") == "both" or len(p["text"]) < 100),  # подписи и надписи короткие
+        # таблицы, подписи к ним и короткие надписи стоят не по ширине, и это правильно
+        (t("Выравнивание по ширине"), lambda p: p.get("jc") == "both" or len(p["text"]) < 100
+         or p["in_table"] or p["text"].lower().startswith(docx_read.CAPTION)),
         (t("Отбивка абзаца 6 пт до и после"), lambda p: near(p.get("before"), 120, 1) and near(p.get("after"), 120, 1)),
         (t("Абзацного отступа нет"), lambda p: not p.get("first_line")),
     ]:
@@ -187,8 +189,8 @@ def format_checks(doc, lang_):
         same = [h for h in heads if h["level"] == level]
         wrong = [h for h in same if not (near(h.get("size"), size, 0.5) and h.get("bold")
                                          and (level > 1 or h.get("page_break")))]
-        if not same:
-            add(label, False, t("таких заголовков нет"))
+        if not same:  # работа без заголовков третьего уровня это не нарушение, но учителю видно
+            out.append({"label": label, "status": "unclear", "note": t("таких заголовков нет")})
         else:
             status, note = sample(same, wrong, lang_)
             add(label, status == "pass", note)
