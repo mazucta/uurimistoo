@@ -220,3 +220,8 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .diff ins { background: #dff3e5; text-decoration: none; border-radius: 3px; }
 .diff del { background: #fde2df; color: var(--bad); border-radius: 3px; }
 .source-form.cover { margin-top: 0; padding-top: 0; border: 0; margin-bottom: 8px; }
+
+/* предварительная оценка по критериям рецензента */
+.score-card .score { font-size: 34px; font-weight: 700; margin: 4px 0 10px; }
+.score-card .score .muted { font-size: 18px; font-weight: 500; }
+.marks .mark.num { display: inline-flex; justify-content: center; min-width: 22px; font-weight: 600; }

@@ -12,6 +12,35 @@
   </div>
 </div>
 
+{% if score is not none %}
+<section class="card score-card">
+  <div class="card-head"><h2>{{ _('Предварительная оценка') }}</h2>
+    <span class="muted small">{{ _('баллы предлагает ИИ, ставит учитель') }}</span></div>
+  <div class="score"><b>{{ score }}</b> <span class="muted">/ {{ max_score }}</span></div>
+  <ul class="checks marks">
+    {% for m in rubric %}
+    <li><span class="mark num">{{ m.status or '—' }}</span>
+      <span class="grow">{{ _(m.label) }}{% if m.note %} <span class="muted small">{{ m.note }}</span>{% endif %}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Сам ли ученик писал работу') }}</h2>
+    {% if p.verdict %}<span class="badge {{ 'ok' if p.verdict == 'student' else 'danger' if p.verdict == 'ai' else 'warn' }}">
+      {{ _('похоже на работу ученика') if p.verdict == 'student' else _('есть признаки текста от ИИ') if p.verdict == 'ai' else _('не понять') }}</span>{% endif %}</div>
+  {% if p.verdict_note %}<p>{{ p.verdict_note }}</p>{% endif %}
+  <ul class="checks">
+    {% for s in signs %}
+    <li class="{{ 'pass' if s.status == 'student' else 'fail' if s.status == 'ai' else '' }}">
+      <span class="mark">{{ '✓' if s.status == 'student' else '✗' if s.status == 'ai' else '·' }}</span>
+      <span class="grow">{{ s.label }}{% if s.note %} <span class="muted small">{{ s.note }}</span>{% endif %}</span></li>
+    {% else %}<li class="empty">{{ _('Пока нечего показать') }}</li>{% endfor %}
+  </ul>
+  <p class="muted small">{{ _('Это наблюдения, а не доказательство: по тексту нельзя надёжно установить, кто его написал. Решает учитель.') }}</p>
+</section>
+
 <section class="card">
   <div class="card-head"><h2>{{ _('Что говорит ИИ') }}</h2>
     <span class="muted small">{{ _('через подписку Claude Code') if backend == 'cli' else _('через ключ API') }}</span>
@@ -67,6 +96,20 @@
   </div>
 
   <aside class="side">
+    <div class="card">
+      <div class="card-head"><h3>{{ _('Фото и рисунки') }} <span class="muted">{{ photos|length }}</span></h3></div>
+      <ul class="checks">
+        {% for f in photos %}
+        <li class="{{ 'fail' if f.status == 'ai' else 'pass' if f.status == 'camera' else '' }}">
+          <span class="mark">{{ '✗' if f.status == 'ai' else '✓' if f.status == 'camera' else '·' }}</span>
+          <span class="grow">{{ f.label }}
+            <span class="muted small">{{ _('сделано ИИ') if f.status == 'ai' else _('снято камерой') if f.status == 'camera' else _('метаданных нет') }}{% if f.note %}: {{ f.note }}{% endif %}</span></span>
+        </li>
+        {% else %}<li class="empty">{{ _('Фотографий в работе нет') }}</li>{% endfor %}
+      </ul>
+      {% if photos %}<p class="muted small">{{ _('Метаданные слетают при пересохранении и скриншоте, поэтому «метаданных нет» ничего не доказывает.') }}</p>{% endif %}
+    </div>
+
     <div class="card">
       <div class="card-head"><h3>{{ _('Источники') }} <span class="muted">{{ sources|length }}</span></h3></div>
       <ol class="source-list">

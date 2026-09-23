@@ -68,6 +68,8 @@ class Doc(Paper):
         if not reader.pages:
             raise ValueError("в файле нет страниц")
         self.page_size = (float(reader.pages[0].mediabox.width), float(reader.pages[0].mediabox.height))
+        self.pages = len(reader.pages)
+        self.props = dict(reader.metadata or {})
         self.lines, self.footers = [], []
         for number, page in enumerate(reader.pages[:MAX_PAGES], 1):
             self._read_page(page, number)
@@ -180,6 +182,15 @@ class Doc(Paper):
 
     def cover(self):
         return [p for p in self.paragraphs if p["page"] == 1]
+
+    def meta(self):
+        d = self.props or {}
+        clean = lambda value: re.sub(r"^D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2}).*", r"\1-\2-\3 \4:\5", str(value or ""))
+        return {"author": str(d.get("/Author", "")), "editor": "",
+                "created": clean(d.get("/CreationDate")), "modified": clean(d.get("/ModDate")),
+                "minutes": 0, "revisions": 0,
+                "program": " ".join(filter(None, (str(d.get("/Creator", "")), str(d.get("/Producer", ""))))).strip(),
+                "pages": self.pages}
 
     def page_numbering(self):
         """Номер страницы это число в колонтитуле. Выравнивание считаем по колонке текста."""

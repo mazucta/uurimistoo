@@ -97,6 +97,18 @@ class Paper:
         """Как выровнен номер страницы: center, left, right или None, если нумерации нет."""
         raise NotImplementedError
 
+    def meta(self):
+        """След работы над файлом: кто автор, сколько правок, сколько минут его писали."""
+        return {}
+
+    def meta(self):
+        p = self.props
+        return {"author": p.get("creator", ""), "editor": p.get("lastModifiedBy", ""),
+                "created": p.get("created", "")[:16].replace("T", " "),
+                "modified": p.get("modified", "")[:16].replace("T", " "),
+                "minutes": int(p.get("TotalTime") or 0), "revisions": int(p.get("Revision") or 0),
+                "program": p.get("Application", ""), "pages": int(p.get("Pages") or 0)}
+
     def sources(self):
         """Строки из раздела «Список использованных источников»."""
         out, inside = [], False
@@ -126,6 +138,7 @@ class Doc(Paper):
             if doc is None:
                 raise ValueError("это не документ Word")
             self.styles_xml, settings = part("word/styles.xml"), part("word/settings.xml")
+            core, app_props = part("docProps/core.xml"), part("docProps/app.xml")
             rels = part("word/_rels/document.xml.rels")
             self.footers = [part(f"word/{f}") for f in sorted(
                 n[5:] for n in z.namelist() if re.fullmatch(r"word/footer\d+\.xml", n))]
@@ -136,6 +149,7 @@ class Doc(Paper):
         self.paragraphs = [self._paragraph(p, id(p) in in_table) for p in doc.find(W + "body").iter(W + "p")]
         self.margins = self._margins(doc)
         self.updates_fields = settings is not None and settings.find(W + "updateFields") is not None
+        self.props = {**tags(core), **tags(app_props)}
         self.rel_targets = {attr(r, "Id"): r.get("Target") for r in rels} if rels is not None else {}
 
     def _defaults(self):
@@ -207,6 +221,12 @@ def split_numbered(entries):
     if numbers == list(range(1, len(numbers) + 1)) and len(numbers) > 1:
         return [re.sub(r"\s+", " ", body).strip() for body in parts[2::2]]
     return [re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", e) for e in entries]  # свой номер списка не дублируем
+
+
+def tags(xml):
+    """Свойства документа: имена полей без пространства имён."""
+    return {} if xml is None else {re.sub(r"\{.*\}", "", el.tag): (el.text or "").strip()
+                                   for el in xml if (el.text or "").strip()}
 
 
 def read(data):
