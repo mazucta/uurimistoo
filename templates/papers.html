@@ -2,7 +2,7 @@
 {% block title %}{{ _('Проверки') }}{% endblock %}
 {% block main %}
 <div class="page-head">
-  <div><h1>{{ _('Проверки работ') }}</h1><p class="muted">{{ _('Загрузите работу в формате .docx и получите отчёт: оформление, условия и источники.') }}</p></div>
+  <div><h1>{{ _('Проверки работ') }}</h1><p class="muted">{{ _('Загрузите работу в формате .docx или .pdf и получите отчёт: оформление, условия и источники.') }}</p></div>
 </div>
 
 {% if error %}<div class="banner danger">{{ error }}</div>{% endif %}
@@ -11,10 +11,10 @@
   <div class="card-head"><h2>{{ _('Новая проверка') }}</h2></div>
   <form class="upload" method="post" action="/papers" enctype="multipart/form-data">
     <input name="student" placeholder="{{ _('Чья работа, для себя') }}" value="{{ form.student if form }}">
-    <input type="file" name="file" accept=".docx" required>
+    <input type="file" name="file" accept=".docx,.pdf" required>
     <button class="btn primary">{{ _('Проверить') }}</button>
   </form>
-  <p class="muted small">{{ _('Принимается только .docx: по нему видно настоящее оформление. Проверка с ИИ занимает несколько минут.') }}</p>
+  <p class="muted small">{{ _('По .docx оформление видно точно, по .pdf оно измеряется и часть правил не проверить. Проверка с ИИ занимает несколько минут.') }}</p>
   <p class="muted small">{{ _('Проверку делает Claude Code по подписке владельца компьютера. Для других учителей нужен ключ ANTHROPIC_API_KEY.') if backend == 'cli' else _('Проверка идёт через ключ ANTHROPIC_API_KEY.') }}</p>
 </section>
 

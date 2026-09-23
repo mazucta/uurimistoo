@@ -14,6 +14,9 @@ MAX_ZIP = 60 * 1024 * 1024   # распакованный .docx больше э�
 CAPTION = ("таблица", "рисунок", "tabel", "joonis", "фото", "схема", "диаграмма")  # подписи стоят по центру
 CITATION = re.compile(r"\([^()]{2,90}?(?:\d{4}|lk\.?\s*\d|с\.\s*\d)[^()]{0,25}\)|\[\d{1,3}(?:[,;]\s*[^\]]{0,20})?\]")
 URL = re.compile(r"https?://[^\s,;)\]]+|www\.[^\s,;)\]]+")
+# Части до основного текста: у них свои правила, под проверки основного текста они не идут.
+FRONT = ("содержан", "зміст", "sisukord", "деклара", "анотац", "аннотац", "annotats", "resümee", "титул")
+APPENDIX = ("приложение", "додаток", "lisa ")
 SOURCE_HEADS = ("список", "kasutatud", "allika", "літератур", "литератур", "kirjandus",
                 "references", "використ", "джерел")
 
@@ -63,7 +66,55 @@ def run_props(rpr):
     return {k: v for k, v in out.items() if v is not None}
 
 
-class Doc:
+class Paper:
+    """То, что проверки спрашивают у работы. Умеет .docx (ниже) и .pdf (pdf_read.py).
+
+    paragraphs: список абзацев со свойствами text, font, size, bold, jc, line, first_line, level.
+    margins: поля страницы в сантиметрах. unknown: правила, которые по этому файлу не проверить.
+    """
+
+    paragraphs, margins, unknown = [], {}, frozenset()
+
+    def body(self):
+        """Текст работы: от первого заголовка раздела. До него идут титул, декларация и содержание."""
+        first = next((i for i, p in enumerate(self.paragraphs)
+                      if p["level"] == 1 and not p["text"].strip().lower().startswith(FRONT)), None)
+        return self.paragraphs[first:] if first is not None else self.paragraphs[len(self.cover()):]
+
+    def cover(self):
+        """Титульный лист: всё до первого разрыва страницы."""
+        rest = self.paragraphs[1:]
+        first = next((i for i, p in enumerate(rest) if p["page_break"]), None)
+        return self.paragraphs[:first + 1] if first is not None else []
+
+    def text(self):
+        return "\n".join(p["text"] for p in self.paragraphs if p["text"])
+
+    def headings(self):
+        return [p for p in self.paragraphs if p["level"]]
+
+    def page_numbering(self):
+        """Как выровнен номер страницы: center, left, right или None, если нумерации нет."""
+        raise NotImplementedError
+
+    def sources(self):
+        """Строки из раздела «Список использованных источников»."""
+        out, inside = [], False
+        for p in self.paragraphs:
+            if p["level"]:
+                inside = p["text"].strip().lower().startswith(SOURCE_HEADS)
+                continue
+            if p["text"].strip().lower().startswith(APPENDIX):  # дальше уже приложения
+                inside = False
+            if inside and len(p["text"]) > 15:
+                out.append(p["text"])
+        return split_numbered(out)
+
+    def citations(self):
+        return CITATION.findall(self.text())
+
+
+class Doc(Paper):
     """Разобранный .docx. paragraphs: текст и оформление, margins: поля страницы в сантиметрах."""
 
     def __init__(self, data):
@@ -136,25 +187,6 @@ class Doc:
         m = sect.find(W + "pgMar") if sect is not None else None
         return {side: round(num(attr(m, side), 0) / TWIP_CM, 2) for side in ("top", "right", "bottom", "left")}
 
-    # ---------- то, что нужно проверкам ----------
-
-    def body(self):
-        """Текст работы: от первого заголовка раздела. До него идут титул, декларация и содержание."""
-        first = next((i for i, p in enumerate(self.paragraphs) if p["level"] == 1), None)
-        return self.paragraphs[first:] if first is not None else self.paragraphs[len(self.cover()):]
-
-    def cover(self):
-        """Титульный лист: всё до первого разрыва страницы."""
-        rest = self.paragraphs[1:]
-        first = next((i for i, p in enumerate(rest) if p["page_break"]), None)
-        return self.paragraphs[:first + 1] if first is not None else []
-
-    def text(self):
-        return "\n".join(p["text"] for p in self.paragraphs if p["text"])
-
-    def headings(self):
-        return [p for p in self.paragraphs if p["level"]]
-
     def page_numbering(self):
         """Есть ли в колонтитуле поле PAGE и как оно выровнено."""
         for f in self.footers:
@@ -167,21 +199,14 @@ class Doc:
                 return jc or "left"
         return None
 
-    def sources(self):
-        """Строки из раздела «Список использованных источников»."""
-        out, inside = [], False
-        for p in self.paragraphs:
-            if p["level"]:
-                inside = p["text"].strip().lower().startswith(SOURCE_HEADS)
-                continue
-            if p["page_break"]:  # дальше уже приложения, а не источники
-                inside = False
-            if inside and len(p["text"]) > 15:
-                out.append(re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", p["text"]))  # свой номер списка не дублируем
-        return out
-
-    def citations(self):
-        return CITATION.findall(self.text())
+def split_numbered(entries):
+    """Список «1. … 2. …» разбираем по номерам: в PDF строки источников рвутся и слипаются."""
+    joined = " ".join(entries)
+    parts = re.split(r"(?:^|\s)(\d{1,3})\s*[.)]\s*(?=[A-ZА-ЯЁÕÄÖÜ«])", joined)
+    numbers = [int(n) for n in parts[1::2]]
+    if numbers == list(range(1, len(numbers) + 1)) and len(numbers) > 1:
+        return [re.sub(r"\s+", " ", body).strip() for body in parts[2::2]]
+    return [re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", e) for e in entries]  # свой номер списка не дублируем
 
 
 def read(data):

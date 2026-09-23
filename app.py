@@ -8,7 +8,7 @@ import io, json, os, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, th
 from flask import Flask, g, request, render_template, abort, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 import anthropic
-import docx_read
+import docx_read, pdf_read
 from i18n import LANGS, translate
 
 DB = os.environ.get("DB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
@@ -162,60 +162,69 @@ def sample(paragraphs, wrong, lang_):
 def format_checks(doc, lang_):
     """Правила оформления работы. Каждое либо выполнено, либо нет, и видно, где именно."""
     t = lambda text: translate(text, lang_)
-    body = [p for p in doc.body() if p["text"] and not p["level"]]
+    body = [p for p in doc.body() if p["text"] and not p["level"] and not p.get("block")]
     heads = doc.headings()
     out = []
 
-    def add(label, ok, note=""):
-        out.append({"label": label, "status": "pass" if ok else "fail", "note": note})
+    def add(key, ok, note=""):
+        if key in doc.unknown:  # например отбивку абзаца по PDF не измерить
+            out.append({"label": t(key), "status": "unclear", "note": t("по этому файлу не проверить")})
+        else:
+            out.append({"label": t(key), "status": "pass" if ok else "fail", "note": note})
 
     m = doc.margins
     want = {"left": (3.0, "левое"), "right": (2.0, "правое"), "top": (2.0, "верхнее"), "bottom": (2.0, "нижнее")}
-    bad = [(name, m.get(k)) for k, (cm, name) in want.items() if not near(m.get(k), cm, 0.15)]
-    add(t("Поля: левое 3 см, правое, верхнее и нижнее 2 см"), not bad,
-        ", ".join(f"{t(name)} {value} {t('см')}" for name, value in bad))
+    bad = [(name, m[k]) for k, (cm, name) in want.items() if k in m and not near(m[k], cm, 0.15)]
+    skipped = [t(name) for k, (_cm, name) in want.items() if k not in m]  # в PDF правый край не измерить
+    add("Поля: левое 3 см, правое, верхнее и нижнее 2 см", not bad,
+        ", ".join([f"{t(name)} {value} {t('см')}" for name, value in bad]
+                  + ([f"{', '.join(skipped)}: {t('по этому файлу не проверить')}"] if skipped else [])))
 
     for label, ok_if in [
-        (t("Шрифт Times New Roman"), lambda p: (p.get("font") or "").lower().startswith("times new roman")),
-        (t("Кегль 12"), lambda p: near(p.get("size"), 12, 0.5)),
-        (t("Междустрочный интервал 1,5"), lambda p: near(p.get("line"), 360, 15) and p.get("line_rule") != "exact"),
+        # в PDF шрифт зовётся TimesNewRomanPSMT, в Word «Times New Roman»: сравниваем без пробелов
+        ("Шрифт Times New Roman", lambda p: re.sub(r"[^a-z]", "", (p.get("font") or "").lower()).startswith("timesnewroman")),
+        ("Кегль 12", lambda p: near(p.get("size"), 12, 0.5)),
+        ("Междустрочный интервал 1,5", lambda p: near(p.get("line"), 360, 15) and p.get("line_rule") != "exact"),
         # таблицы, подписи к ним и короткие надписи стоят не по ширине, и это правильно
-        (t("Выравнивание по ширине"), lambda p: p.get("jc") == "both" or len(p["text"]) < 100
+        ("Выравнивание по ширине", lambda p: p.get("jc") == "both" or len(p["text"]) < 100
          or p["in_table"] or p["text"].lower().startswith(docx_read.CAPTION)),
-        (t("Отбивка абзаца 6 пт до и после"), lambda p: near(p.get("before"), 120, 1) and near(p.get("after"), 120, 1)),
-        (t("Абзацного отступа нет"), lambda p: not p.get("first_line")),
+        ("Отбивка абзаца 6 пт до и после", lambda p: near(p.get("before"), 120, 1) and near(p.get("after"), 120, 1)),
+        ("Абзацного отступа нет", lambda p: not p.get("first_line")),
     ]:
+        if not body:  # работа без разделов: проверять правила абзаца не на чем
+            out.append({"label": t(label), "status": "unclear", "note": t("основной текст не найден")})
+            continue
         status, note = sample(body, [p for p in body if not ok_if(p)], lang_)
         add(label, status == "pass", note)
 
-    for level, size, label in [(1, 16, t("Заголовок раздела: 16 пт, полужирный, с новой страницы")),
-                               (2, 14, t("Заголовок подраздела: 14 пт, полужирный")),
-                               (3, 12, t("Заголовок пункта: 12 пт, полужирный"))]:
+    for level, size, label in [(1, 16, "Заголовок раздела: 16 пт, полужирный, с новой страницы"),
+                               (2, 14, "Заголовок подраздела: 14 пт, полужирный"),
+                               (3, 12, "Заголовок пункта: 12 пт, полужирный")]:
         same = [h for h in heads if h["level"] == level]
         wrong = [h for h in same if not (near(h.get("size"), size, 0.5) and h.get("bold")
                                          and (level > 1 or h.get("page_break")))]
         if not same:  # работа без заголовков третьего уровня это не нарушение, но учителю видно
-            out.append({"label": label, "status": "unclear", "note": t("таких заголовков нет")})
+            out.append({"label": t(label), "status": "unclear", "note": t("таких заголовков нет")})
         else:
             status, note = sample(same, wrong, lang_)
             add(label, status == "pass", note)
 
-    add(t("Заголовки выровнены по левому полю"), all(h.get("jc") in (None, "left", "start") for h in heads),
+    add("Заголовки выровнены по левому полю", all(h.get("jc") in (None, "left", "start") for h in heads),
         ", ".join(h["text"][:40] for h in heads if h.get("jc") not in (None, "left", "start"))[:120])
 
     jc = doc.page_numbering()
-    add(t("Номер страницы внизу по центру"), jc == "center",
+    add("Номер страницы внизу по центру", jc == "center",
         t("нумерации страниц нет") if jc is None else f"{t('выравнивание')}: {jc}")
 
     cover = [p for p in doc.cover() if p["text"]]
     sizes = [p.get("size") for p in cover if p.get("size")]
-    add(t("Титульный лист: 14 пт, название работы 20 пт"),
+    add("Титульный лист: 14 пт, название работы 20 пт",
         bool(cover) and near(max(sizes, default=0), 20, 0.5)
         and all(near(s, 14, 0.5) or near(s, 20, 0.5) for s in sizes),
         t("титульного листа нет") if not cover else
         ", ".join(sorted({f"{s:g} {t('пт')}" for s in sizes if not (near(s, 14, 0.5) or near(s, 20, 0.5))})))
 
-    add(t("Список использованных источников оформлен отдельным разделом"), bool(doc.sources()),
+    add("Список использованных источников оформлен отдельным разделом", bool(doc.sources()),
         "" if doc.sources() else t("раздел со списком источников не найден"))
     return out
 
@@ -571,14 +580,15 @@ def papers_home(me):
 def upload_paper(me):
     f = request.files.get("file")
     data = f.read() if f else b""
-    if not data or not (f.filename or "").lower().endswith(".docx"):
-        return fail("Нужен файл .docx", "papers.html", papers=[], backend=backend(),
+    name = (f.filename or "").lower() if f else ""
+    if not data or not name.endswith((".docx", ".pdf")):
+        return fail("Нужен файл .docx или .pdf", "papers.html", papers=[], backend=backend(),
                     requirements=requirements_of(me["id"]), rules=RULES)
     try:
-        doc = docx_read.read(io.BytesIO(data))
+        doc = read_file(data, name)
     except Exception as ex:
         app.logger.warning("Файл не читается: %s", ex)
-        return fail("Файл не читается как документ Word", "papers.html", papers=[], backend=backend(),
+        return fail("Файл не читается", "papers.html", papers=[], backend=backend(),
                     requirements=requirements_of(me["id"]), rules=RULES)
     text = doc.text()
     pid = run("""INSERT INTO papers(teacher_id,student,title,filename,text,data,chars,uploaded_at)
@@ -587,6 +597,11 @@ def upload_paper(me):
     check_paper(pid, doc, me["id"], lang())
     start_ai(pid)
     return done(f"/papers/{pid}", id=pid)
+
+
+def read_file(data, name):
+    """Word читаем целиком, PDF измеряем: в нём нет стилей, есть только буквы в точках страницы."""
+    return (pdf_read if name.endswith(".pdf") else docx_read).read(io.BytesIO(data))
 
 
 def own_paper(me, pid, with_file=False):
@@ -600,7 +615,7 @@ def own_paper(me, pid, with_file=False):
 def report(me, pid):
     p = own_paper(me, pid, with_file=True)
     if p["data"]:  # правила оформления пересчитываем: так они всегда на языке, который выбрал учитель
-        store_findings(pid, "format", format_checks(docx_read.read(io.BytesIO(p["data"])), lang()))
+        store_findings(pid, "format", format_checks(read_file(p["data"], p["filename"].lower()), lang()))
     p.pop("data")
     return {"p": p, "format": findings_of(pid, "format"), "reqs": findings_of(pid, "req"),
             "sources": findings_of(pid, "source"), "claims": findings_of(pid, "claim"), "backend": backend()}
@@ -610,7 +625,7 @@ def report(me, pid):
 def recheck(me, pid):
     p = own_paper(me, pid, with_file=True)
     if p["data"]:
-        check_paper(pid, docx_read.read(io.BytesIO(p["data"])), me["id"], lang())
+        check_paper(pid, read_file(p["data"], p["filename"].lower()), me["id"], lang())
     start_ai(pid)
     return done(f"/papers/{pid}")
 
