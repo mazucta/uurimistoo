@@ -174,7 +174,9 @@ class Doc:
             if p["level"]:
                 inside = p["text"].strip().lower().startswith(SOURCE_HEADS)
                 continue
-            if inside and len(p["text"]) > 8:
+            if p["page_break"]:  # дальше уже приложения, а не источники
+                inside = False
+            if inside and len(p["text"]) > 15:
                 out.append(re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", p["text"]))  # свой номер списка не дублируем
         return out
 

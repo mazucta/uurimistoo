@@ -4,7 +4,7 @@
 и числовые условия учителя. Что достаётся ИИ: существуют ли источники, подтверждают ли они то,
 что написано в работе рядом со ссылкой на них, и условия, которые нельзя посчитать.
 """
-import io, json, os, re, secrets, sqlite3, sys, threading, time
+import io, json, os, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, threading, time
 from flask import Flask, g, request, render_template, abort, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 import anthropic
@@ -61,6 +61,11 @@ DEFAULT_REQUIREMENTS = [
     ("Работа написана научным стилем, без разговорных оборотов", "ai", ""),
 ]
 AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-5")
+# Два способа спросить модель. Ключ API нужен, когда программой пользуются другие учителя.
+# Пока она стоит на своём компьютере, проверку делает Claude Code по подписке хозяина.
+AI_BACKEND = os.environ.get("AI_BACKEND", "")  # api, cli или пусто: выбрать само
+CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
+CLI_TIMEOUT = 20 * 60
 AI_PROMPT = """Ты помогаешь учителю проверить исследовательскую работу гимназиста 12 класса (uurimistöö). Работа и её список источников приложены.
 
 1. sources: по каждому источнику из списка скажи, существует ли он на самом деле. Ссылки открывай через web_fetch, книги и статьи без ссылки ищи через web_search.
@@ -250,7 +255,18 @@ def findings_of(pid, kind):
 
 # ---------- проверка с ИИ ----------
 
+def backend():
+    """Ключ API важнее: он для настоящей работы. Без ключа зовём Claude Code по подписке."""
+    if AI_BACKEND in ("api", "cli"):
+        return AI_BACKEND
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "api"
+    return "cli" if shutil.which(CLAUDE_CLI) else "api"
+
+
 def ask_claude(system, content, schema, tools=None):
+    if backend() == "cli":
+        return ask_claude_cli(system, content, schema)
     r = anthropic.Anthropic().beta.messages.create(
         model=AI_MODEL, max_tokens=16000, system=system,
         betas=["server-side-fallback-2026-07-01"], fallbacks="default",
@@ -284,6 +300,28 @@ AI_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["summ
                                     "note": {"type": "string"}}}}}}
 
 
+def ask_claude_cli(system, content, schema):
+    """Тот же запрос через Claude Code: платит подписка хозяина компьютера, ключ API не нужен.
+    Модель работает в пустой папке и без права трогать файлы: ей разрешены только web-инструменты."""
+    prompt = (content + "\n\nОтветь одним объектом JSON по схеме, без пояснений и без ``` вокруг:\n"
+              + json.dumps(schema, ensure_ascii=False))
+    with tempfile.TemporaryDirectory() as work:
+        r = subprocess.run(
+            [CLAUDE_CLI, "--print", "--output-format", "json", "--model", AI_MODEL, "--system-prompt", system,
+             "--restricted", "--strict-mcp-config", "--allowed-tools", "WebFetch", "WebSearch"],
+            input=prompt, capture_output=True, text=True, cwd=work, timeout=CLI_TIMEOUT)
+    if r.returncode != 0:
+        raise RuntimeError(f"claude: {(r.stderr or r.stdout).strip()[-300:]}")
+    answer = json.loads(r.stdout)
+    if answer.get("is_error"):
+        raise RuntimeError(f"claude: {str(answer.get('result'))[:300]}")
+    text = answer.get("result") or ""
+    found = re.search(r"\{.*\}", text, re.S)
+    if not found:
+        raise RuntimeError(f"модель ответила не по схеме: {text[:200]}")
+    return json.loads(found[0])
+
+
 def run_ai(pid):
     """Проверка в фоне. Имя ученика в модель не уходит: только текст работы и её источники."""
     con = sqlite3.connect(DB)
@@ -297,7 +335,8 @@ def run_ai(pid):
         sources = con.execute("SELECT id, position, label FROM findings WHERE paper_id=? AND kind='source' ORDER BY position",
                               (pid,)).fetchall()
         listing = "\n".join(f"{r['position']}. {r['label']}" for r in sources) or "список источников не найден"
-        system = AI_PROMPT + ("\n\nsummary, note и все пояснения пиши на эстонском языке." if p["lang"] == "et" else "")
+        speak = {"et": "эстонском", "uk": "украинском"}.get(p["lang"], "украинском")
+        system = AI_PROMPT + f"\n\nsummary, note и все пояснения пиши на {speak} языке."
         content = (f"<тема>\n{p['title']}\n</тема>\n\n<условия>\n{conditions}\n</условия>\n\n"
                    f"<источники>\n{listing}\n</источники>\n\n<работа>\n{p['text']}\n</работа>")
         result = ask_claude(system, content, AI_SCHEMA, tools=[
@@ -329,6 +368,10 @@ def run_ai(pid):
 
 
 def ai_error_text(ex):
+    if isinstance(ex, subprocess.TimeoutExpired):
+        return "Claude Code не ответил за 20 минут"
+    if isinstance(ex, (TypeError, anthropic.AuthenticationError)) and backend() == "cli":
+        return "войдите в Claude Code командой claude или задайте ANTHROPIC_API_KEY"
     if isinstance(ex, TypeError) and "authentication" in str(ex):
         return "не задан ключ ANTHROPIC_API_KEY на сервере"
     known = [(anthropic.AuthenticationError, "неверный ключ API"),
@@ -521,7 +564,7 @@ def papers_home(me):
           (SELECT COUNT(*) FROM findings f WHERE f.paper_id=p.id AND f.kind!='claim') AS checks,
           (SELECT COUNT(*) FROM findings f WHERE f.paper_id=p.id AND f.kind='claim') AS claims
         FROM papers p WHERE teacher_id=? ORDER BY uploaded_at DESC""", me["id"])
-    return {"papers": papers, "requirements": requirements_of(me["id"]), "rules": RULES}
+    return {"papers": papers, "requirements": requirements_of(me["id"]), "rules": RULES, "backend": backend()}
 
 
 @view("/papers", method="POST")
@@ -529,12 +572,13 @@ def upload_paper(me):
     f = request.files.get("file")
     data = f.read() if f else b""
     if not data or not (f.filename or "").lower().endswith(".docx"):
-        return fail("Нужен файл .docx", "papers.html", papers=[], requirements=requirements_of(me["id"]), rules=RULES)
+        return fail("Нужен файл .docx", "papers.html", papers=[], backend=backend(),
+                    requirements=requirements_of(me["id"]), rules=RULES)
     try:
         doc = docx_read.read(io.BytesIO(data))
     except Exception as ex:
         app.logger.warning("Файл не читается: %s", ex)
-        return fail("Файл не читается как документ Word", "papers.html", papers=[],
+        return fail("Файл не читается как документ Word", "papers.html", papers=[], backend=backend(),
                     requirements=requirements_of(me["id"]), rules=RULES)
     text = doc.text()
     pid = run("""INSERT INTO papers(teacher_id,student,title,filename,text,data,chars,uploaded_at)
@@ -559,7 +603,7 @@ def report(me, pid):
         store_findings(pid, "format", format_checks(docx_read.read(io.BytesIO(p["data"])), lang()))
     p.pop("data")
     return {"p": p, "format": findings_of(pid, "format"), "reqs": findings_of(pid, "req"),
-            "sources": findings_of(pid, "source"), "claims": findings_of(pid, "claim")}
+            "sources": findings_of(pid, "source"), "claims": findings_of(pid, "claim"), "backend": backend()}
 
 
 @view("/papers/<int:pid>/recheck", method="POST")
