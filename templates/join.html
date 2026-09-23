@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ teacher.name }}{% endblock %}
+{% block main %}
+<div class="auth">
+  {% include "_brand.html" %}
+  <div class="card auth-card">
+    <p class="muted small">{{ _('Приглашение от руководителя') }}</p>
+    <h2>{{ teacher.name }}</h2>
+    {% if me %}
+      <p>{{ _('Вы уже вошли. Чтобы принять приглашение, выйдите из аккаунта.') }}</p>
+    {% else %}
+      <form method="post" action="/join/{{ invite }}">
+        {% if error %}<p class="error">{{ _(error) }}</p>{% endif %}
+        <label class="field"><span>{{ _('Фамилия и имя') }}</span><input name="name" value="{{ form.name if form }}" required autofocus></label>
+        <label class="field"><span>{{ _('Придумайте логин') }}</span><input name="login" value="{{ form.login if form }}" autocomplete="username" autocapitalize="none" required></label>
+        <label class="field"><span>{{ _('Пароль') }}</span><input name="password" type="password" autocomplete="new-password" minlength="6" required></label>
+        <button class="btn primary wide">{{ _('Начать работу') }}</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

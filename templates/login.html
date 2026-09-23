@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Вход') }}{% endblock %}
+{% block main %}
+<div class="auth">
+  {% include "_brand.html" %}
+  <form class="card auth-card" method="post" action="/login">
+    <h2>{{ _('Вход') }}</h2>
+    {% if error %}<p class="error">{{ _(error) }}</p>{% endif %}
+    <label class="field"><span>{{ _('Логин') }}</span><input name="login" value="{{ form.login if form }}" autocomplete="username" autocapitalize="none" required autofocus></label>
+    <label class="field"><span>{{ _('Пароль') }}</span><input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary wide">{{ _('Войти') }}</button>
+    <p class="muted small">{{ _('Руководитель без аккаунта?') }} <a href="/register">{{ _('Зарегистрироваться') }}</a>.<br>{{ _('Ученики входят по ссылке-приглашению от руководителя.') }}</p>
+  </form>
+</div>
+{% endblock %}

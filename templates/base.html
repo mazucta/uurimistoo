@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}{% endblock %} · {{ _('Исследовательская работа') }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+<style>:root { --appendix-label: "{{ _('ПРИЛОЖЕНИЕ') }}"; --caption-hint: "{{ _('Подпись: что на фото, когда и кем снято, кому принадлежит оригинал') }}"; }</style>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232446c7'/%3E%3Ctext x='16' y='23' font-family='sans-serif' font-size='18' font-weight='700' fill='white' text-anchor='middle'%3EU%3C/text%3E%3C/svg%3E">
+{% block head %}{% endblock %}
+</head>
+<body>
+{% if me %}
+<header class="top"><div class="wrap top-in">
+  <a class="logo" href="/"><span class="logo-mark">U</span><span class="logo-text">{{ _('Исследовательская работа') }}</span></a>
+  <div class="me">
+    <span class="langs">{% for code in langs %}<a class="{{ 'on' if code == lang }}" href="?lang={{ code }}">{{ code|upper }}</a>{% endfor %}</span>
+    <span class="me-name">{{ me.name }}</span>
+    <span class="role">{{ _('руководитель') if me.role == 'teacher' else _('ученик') }}</span>
+    <form method="post" action="/logout"><button class="btn-link">{{ _('Выйти') }}</button></form>
+  </div>
+</div></header>
+{% endif %}
+<main class="wrap">{% block main %}{% endblock %}</main>
+</body>
+</html>

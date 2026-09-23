@@ -1,0 +1,6 @@
+<div class="auth-brand">
+  <span class="logo-mark big">U</span>
+  <h1>{{ _('Исследовательская работа') }}</h1>
+  <p class="muted">{{ _('Ученик пишет работу, ведёт список источников и получает замечания. Руководитель видит, как появился текст и на что работа опирается.') }}</p>
+  <p class="langs auth-langs">{% for code in langs %}<a class="{{ 'on' if code == lang }}" href="?lang={{ code }}">{{ code|upper }}</a>{% endfor %}</p>
+</div>
