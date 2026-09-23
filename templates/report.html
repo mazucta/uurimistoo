@@ -19,11 +19,29 @@
   <div class="score"><b>{{ score }}</b> <span class="muted">/ {{ max_score }}</span></div>
   <ul class="checks marks">
     {% for m in rubric %}
-    <li><span class="mark num">{{ m.status or '—' }}</span>
-      <span class="grow">{{ _(m.label) }}{% if m.note %} <span class="muted small">{{ m.note }}</span>{% endif %}</span></li>
+    <li>
+      <span class="mark num">{{ m.status or '—' }}</span>
+      <span class="grow">
+        <b>{{ _(m.label) }}</b>
+        {% if m.note %}<div class="small good">+ {{ m.note }}</div>{% endif %}
+        {% if m.extra %}<div class="small lost">− {{ m.extra }}</div>{% endif %}
+      </span>
+    </li>
     {% endfor %}
   </ul>
 </section>
+
+{% if praise %}
+<section class="card">
+  <div class="card-head"><h2>{{ _('Что стоит отметить') }}</h2>
+    <span class="muted small">{{ _('сильные стороны работы, о которых можно сказать ученику') }}</span></div>
+  <ul class="checks">
+    {% for item in praise %}
+    <li class="pass"><span class="mark">+</span><span class="grow">{{ item.label }}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% endif %}
 
 <section class="card">

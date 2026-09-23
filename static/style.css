@@ -225,3 +225,6 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .score-card .score { font-size: 34px; font-weight: 700; margin: 4px 0 10px; }
 .score-card .score .muted { font-size: 18px; font-weight: 500; }
 .marks .mark.num { display: inline-flex; justify-content: center; min-width: 22px; font-weight: 600; }
+.marks li { align-items: flex-start; }
+.marks .good, .checks .good { color: var(--ok); margin-top: 2px; }
+.marks .lost { color: var(--bad); margin-top: 2px; }
