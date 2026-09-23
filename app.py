@@ -232,9 +232,11 @@ def format_checks(doc, lang_):
 # ---------- разбор загруженного файла ----------
 
 def paper_title(doc):
+    """Тема это самая крупная надпись на титульном листе, а без титула первая фраза работы."""
     cover = [p for p in doc.cover() if p["text"]]
     biggest = max(cover, key=lambda p: (p.get("size") or 0, len(p["text"])), default=None)
-    return (biggest["text"] if biggest else doc.text().split("\n")[0])[:200]
+    text = biggest["text"] if biggest else doc.text().split("\n")[0]
+    return (text[:120].rsplit(". ", 1)[0] if len(text) > 120 else text).strip()[:200]
 
 
 def store_findings(pid, kind, rows):
