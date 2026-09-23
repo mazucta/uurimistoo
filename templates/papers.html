@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Проверки') }}{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div><h1>{{ _('Проверки работ') }}</h1><p class="muted">{{ _('Загрузите работу в формате .docx и получите отчёт: оформление, условия и источники.') }}</p></div>
+</div>
+
+{% if error %}<div class="banner danger">{{ error }}</div>{% endif %}
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Новая проверка') }}</h2></div>
+  <form class="upload" method="post" action="/papers" enctype="multipart/form-data">
+    <input name="student" placeholder="{{ _('Чья работа, для себя') }}" value="{{ form.student if form }}">
+    <input type="file" name="file" accept=".docx" required>
+    <button class="btn primary">{{ _('Проверить') }}</button>
+  </form>
+  <p class="muted small">{{ _('Принимается только .docx: по нему видно настоящее оформление. Проверка с ИИ занимает несколько минут.') }}</p>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Проверенные работы') }}</h2></div>
+  <div class="scroll"><table class="t">
+    <thead><tr>
+      <th>{{ _('Работа') }}</th><th>{{ _('Объём') }}</th><th class="num">{{ _('Нарушений') }}</th>
+      <th class="num">{{ _('Спорных мест') }}</th><th>{{ _('Проверка ИИ') }}</th><th class="num">{{ _('Загружено') }}</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for p in papers %}
+      <tr>
+        <td><a href="/papers/{{ p.id }}">{{ p.title or p.filename }}</a>
+          {% if p.student %}<div class="muted small">{{ p.student }}</div>{% endif %}</td>
+        <td class="nowrap">{{ p.chars }} {{ _('знаков') }}</td>
+        <td class="num">{% if p.failed %}<span class="flag">{{ p.failed }}</span> <span class="muted small">{{ _('из') }} {{ p.checks }}</span>{% else %}—{% endif %}</td>
+        <td class="num">{{ p.claims or '—' }}</td>
+        <td>
+          {% if p.ai_status == 'pending' %}<span class="badge warn">{{ _('идёт') }}</span>
+          {% elif p.ai_status == 'error' %}<span class="badge danger">{{ _('ошибка') }}</span>
+          {% elif p.ai_status == 'done' %}<span class="badge ok">{{ _('готово') }}</span>
+          {% else %}<span class="badge">—</span>{% endif %}
+        </td>
+        <td class="num nowrap">{{ p.uploaded_at|dt }}</td>
+        <td class="num"><a class="btn small" href="/papers/{{ p.id }}">{{ _('Отчёт') }}</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="empty">{{ _('Пока ничего не проверено') }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<section class="card" id="requirements">
+  <div class="card-head"><h2>{{ _('Условия к работе') }}</h2><span class="muted small">{{ _('одни считает программа, остальные проверяет ИИ') }}</span></div>
+  <ul class="rules">
+    {% for r in requirements %}
+    <li>
+      <span class="badge {{ 'info' if r.rule != 'ai' else '' }}">{{ _('программа') if r.rule != 'ai' else _('ИИ') }}</span>
+      <span class="grow">{{ r.text }}</span>
+      {% if r.value %}<span class="muted small nowrap">{{ r.value }}</span>{% endif %}
+      <form method="post" action="/requirements/{{ r.id }}/delete"><button class="btn-link danger" title="{{ _('Удалить') }}">✕</button></form>
+    </li>
+    {% else %}<li class="empty">{{ _('Условий пока нет') }}</li>{% endfor %}
+  </ul>
+  <form class="rule-form" method="post" action="/requirements">
+    <input name="text" placeholder="{{ _('Условие, как его прочитает ученик') }}" required>
+    <select name="rule">
+      <option value="ai">{{ _('проверяет ИИ') }}</option>
+      <option value="chars_min">{{ _('объём, знаков не меньше') }}</option>
+      <option value="sources_min">{{ _('источников не меньше') }}</option>
+      <option value="citations_min">{{ _('ссылок в тексте не меньше') }}</option>
+      <option value="section">{{ _('есть раздел, слова через запятую') }}</option>
+    </select>
+    <input name="value" placeholder="{{ _('Значение') }}" size="10">
+    <button class="btn">{{ _('Добавить') }}</button>
+  </form>
+  <p class="muted small">{{ _('Оформление по школьным правилам проверяется всегда, его в список добавлять не нужно.') }}</p>
+</section>
+{% endblock %}

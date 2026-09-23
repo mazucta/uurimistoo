@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}{{ p.title or p.filename }}{% endblock %}
+{% block head %}{% if p.ai_status == 'pending' %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block main %}
+<nav class="crumbs"><a href="/papers">{{ _('Проверки работ') }}</a> / {{ p.filename }}</nav>
+<div class="page-head">
+  <div><h1>{{ p.title or p.filename }}</h1>
+    <p class="muted">{% if p.student %}{{ p.student }} · {% endif %}{{ p.chars }} {{ _('знаков') }} · {{ p.uploaded_at|dt }}</p></div>
+  <div class="row-meta">
+    <form method="post" action="/papers/{{ p.id }}/recheck"><button class="btn">{{ _('Проверить заново') }}</button></form>
+    <form method="post" action="/papers/{{ p.id }}/delete" onsubmit="return confirm('{{ _('Удалить проверку вместе с файлом?') }}')"><button class="btn-link danger">{{ _('Удалить') }}</button></form>
+  </div>
+</div>
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Что говорит ИИ') }}</h2>
+    {% if p.ai_status == 'pending' %}<span class="badge warn">{{ _('идёт проверка') }}</span>{% endif %}</div>
+  {% if p.ai_status == 'done' %}<p class="pre">{{ p.ai_note }}</p>
+  {% elif p.ai_status == 'error' %}<p class="error">{{ _('Проверка не удалась') }}{% if p.ai_note %}: {{ _(p.ai_note) }}{% else %}. {{ _('Нажмите «Проверить заново».') }}{% endif %}</p>
+  {% elif p.ai_status == 'pending' %}<p class="muted">{{ _('Модель открывает источники и сверяет их с работой. Страница обновится сама.') }}</p>
+  {% else %}<p class="muted">{{ _('Проверка ИИ не запускалась') }}</p>{% endif %}
+</section>
+
+{% macro checklist(items, empty) %}
+<ul class="checks">
+  {% for c in items %}
+  <li class="{{ c.status }}">
+    <span class="mark">{{ '✓' if c.status == 'pass' else '✗' if c.status == 'fail' else '·' }}</span>
+    <span class="grow">{{ c.label }}{% if c.note %} <span class="muted small">{{ c.note }}</span>{% endif %}</span>
+    {% if c.auto is defined and not c.auto %}<span class="badge tiny">{{ _('ИИ') }}</span>{% endif %}
+  </li>
+  {% else %}<li class="empty">{{ empty }}</li>{% endfor %}
+</ul>
+{% endmacro %}
+
+<div class="review">
+  <div>
+    <section class="card">
+      <div class="card-head"><h2>{{ _('Оформление') }}</h2>
+        <span class="muted small">{{ format|selectattr('status', 'equalto', 'pass')|list|length }} / {{ format|length }}</span></div>
+      {{ checklist(format, _('Оформление не проверено')) }}
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>{{ _('Условия учителя') }}</h2>
+        <span class="muted small">{{ reqs|selectattr('status', 'equalto', 'pass')|list|length }} / {{ reqs|length }}</span></div>
+      {{ checklist(reqs, _('Условий пока нет')) }}
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>{{ _('Спорные места') }}</h2>
+        <span class="muted small">{{ _('текст со ссылкой, который источник не подтверждает') }}</span></div>
+      <ul class="notes">
+        {% for c in claims %}
+        <li>
+          <q>{{ c.label }}</q>
+          <p>{{ c.note }}</p>
+          <div class="note-foot">
+            <span class="badge tiny {{ 'danger' if c.status == 'contradicts' }}">{{ _('расходится с источником') if c.status == 'contradicts' else _('нет в источнике') }}</span>
+            {% if c.ref %}<span class="muted small">{{ _('источник') }} {{ c.ref }}</span>{% endif %}
+          </div>
+        </li>
+        {% else %}<li class="empty">{{ _('Таких мест не нашлось') }}</li>{% endfor %}
+      </ul>
+    </section>
+  </div>
+
+  <aside class="side">
+    <div class="card">
+      <div class="card-head"><h3>{{ _('Источники') }} <span class="muted">{{ sources|length }}</span></h3></div>
+      <ol class="source-list">
+        {% for s in sources %}
+        <li class="{{ s.status }}">
+          <div class="source-head">{{ s.label }}</div>
+          <div class="small">
+            {% if s.status == 'exists' %}<span class="badge ok tiny">{{ _('существует') }}</span>
+            {% elif s.status == 'unreachable' %}<span class="badge warn tiny">{{ _('не открылся') }}</span>
+            {% elif s.status == 'not_found' %}<span class="badge danger tiny">{{ _('не найден') }}</span>
+            {% else %}<span class="badge tiny">{{ _('не проверен') }}</span>{% endif %}
+          </div>
+          {% if s.note %}<p class="muted small">{{ s.note }}</p>{% endif %}
+        </li>
+        {% else %}<li class="empty">{{ _('В работе нет раздела со списком источников') }}</li>{% endfor %}
+      </ol>
+    </div>
+  </aside>
+</div>
+{% endblock %}
