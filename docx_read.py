@@ -14,7 +14,8 @@ MAX_ZIP = 60 * 1024 * 1024   # распакованный .docx больше э�
 CAPTION = ("таблица", "рисунок", "tabel", "joonis", "фото", "схема", "диаграмма")  # подписи стоят по центру
 CITATION = re.compile(r"\([^()]{2,90}?(?:\d{4}|lk\.?\s*\d|с\.\s*\d)[^()]{0,25}\)|\[\d{1,3}(?:[,;]\s*[^\]]{0,20})?\]")
 URL = re.compile(r"https?://[^\s,;)\]]+|www\.[^\s,;)\]]+")
-SOURCE_HEADS = ("список", "kasutatud", "allika", "литератур", "kirjandus", "references", "використ")
+SOURCE_HEADS = ("список", "kasutatud", "allika", "літератур", "литератур", "kirjandus",
+                "references", "використ", "джерел")
 
 
 def attr(el, name, default=None):
