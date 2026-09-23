@@ -9,9 +9,9 @@ if con.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]:
     sys.exit("База не пустая. Удалите data.db и запустите снова.")
 
 uid = con.execute("INSERT INTO users(name,login,pw_hash,lang,created_at) VALUES(?,?,?,?,?)",
-                  ("Мария Петровна Соколова", "teacher", generate_password_hash("teacher123"), "ru", time.time())).lastrowid
+                  ("Марія Соколова", "teacher", generate_password_hash("teacher123"), "uk", time.time())).lastrowid
 con.executemany("INSERT INTO requirements(teacher_id,position,text,rule,value) VALUES(?,?,?,?,?)",
-                [(uid, i, text, rule, value) for i, (text, rule, value) in enumerate(A.DEFAULT_REQUIREMENTS, 1)])
+                [(uid, i, A.translate(text, "uk"), rule, value) for i, (text, rule, value) in enumerate(A.DEFAULT_REQUIREMENTS, 1)])
 con.commit()
 con.close()
 print("Готово: учитель teacher / teacher123")

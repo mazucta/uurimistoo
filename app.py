@@ -495,7 +495,8 @@ def register():
         return fail("Этот логин уже занят", "register.html")
     uid = cur.lastrowid
     db().executemany("INSERT INTO requirements(teacher_id,position,text,rule,value) VALUES(?,?,?,?,?)",
-                     [(uid, i, text, rule, value) for i, (text, rule, value) in enumerate(DEFAULT_REQUIREMENTS, 1)])
+                     [(uid, i, translate(text, lang()), rule, value)  # условия учитель потом правит сам, поэтому переводим сразу
+                      for i, (text, rule, value) in enumerate(DEFAULT_REQUIREMENTS, 1)])
     db().commit()
     return start_session(q1("SELECT id, name, login, lang FROM users WHERE id=?", uid))
 
@@ -553,7 +554,10 @@ def own_paper(me, pid, with_file=False):
 
 @view("/papers/<int:pid>", "report.html")
 def report(me, pid):
-    p = own_paper(me, pid)
+    p = own_paper(me, pid, with_file=True)
+    if p["data"]:  # правила оформления пересчитываем: так они всегда на языке, который выбрал учитель
+        store_findings(pid, "format", format_checks(docx_read.read(io.BytesIO(p["data"])), lang()))
+    p.pop("data")
     return {"p": p, "format": findings_of(pid, "format"), "reqs": findings_of(pid, "req"),
             "sources": findings_of(pid, "source"), "claims": findings_of(pid, "claim")}
 

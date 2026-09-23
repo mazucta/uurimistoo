@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}{{ _('Регистрация руководителя') }}{% endblock %}
+{% block title %}{{ _('Регистрация учителя') }}{% endblock %}
 {% block main %}
 <div class="auth">
   {% include "_brand.html" %}
   <form class="card auth-card" method="post" action="/register">
-    <h2>{{ _('Регистрация руководителя') }}</h2>
+    <h2>{{ _('Регистрация учителя') }}</h2>
     {% if error %}<p class="error">{{ _(error) }}</p>{% endif %}
-    <label class="field"><span>{{ _('Имя и отчество') }}</span><input name="name" value="{{ form.name if form }}" autocomplete="name" required autofocus></label>
+    <label class="field"><span>{{ _('Имя') }}</span><input name="name" value="{{ form.name if form }}" autocomplete="name" required autofocus></label>
     <label class="field"><span>{{ _('Логин') }}</span><input name="login" value="{{ form.login if form }}" autocomplete="username" autocapitalize="none" required></label>
     <label class="field"><span>{{ _('Пароль') }}</span><input name="password" type="password" autocomplete="new-password" minlength="6" required></label>
     <button class="btn primary wide">{{ _('Создать аккаунт') }}</button>

@@ -174,7 +174,7 @@ class Doc:
                 inside = p["text"].strip().lower().startswith(SOURCE_HEADS)
                 continue
             if inside and len(p["text"]) > 8:
-                out.append(p["text"])
+                out.append(re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", p["text"]))  # свой номер списка не дублируем
         return out
 
     def citations(self):
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     assert body["font"] == "Times New Roman" and body["size"] == 12 and body["jc"] == "both" and body["line"] == 360
     assert d.cover()[0]["size"] == 20, d.cover()[0]
     assert len(d.citations()) == 2, d.citations()
-    assert d.sources() == ["1. Иванов И. Энергия зданий. 2021. https://err.ee/uurimus"], d.sources()
+    assert d.sources() == ["Иванов И. Энергия зданий. 2021. https://err.ee/uurimus"], d.sources()
     assert d.page_numbering() is None
     assert not any(p["in_table"] for p in d.paragraphs)
     print("ok")
