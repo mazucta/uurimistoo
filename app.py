@@ -14,7 +14,11 @@ from i18n import LANGS, translate
 DB = os.environ.get("DB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
 app = Flask(__name__)
 app.json.ensure_ascii = False
+if os.environ.get("BEHIND_PROXY"):  # на Render схему и адрес клиента передаёт прокси
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # работа с фотографиями столько весит с запасом
+REGISTER_CODE = os.environ.get("REGISTER_CODE", "")  # пусто: регистрация открыта
 LOGIN_TRIES = 8          # столько неудачных попыток входа подряд,
 LOGIN_PAUSE = 15 * 60    # потом логин отдыхает столько секунд
 # ponytail: счётчик попыток живёт в процессе; при нескольких воркерах нужен общий, например в базе
@@ -69,7 +73,7 @@ DEFAULT_REQUIREMENTS = [
     ("Тема раскрыта, выводы следуют из собранных данных", "ai", ""),
     ("Работа написана научным стилем, без разговорных оборотов", "ai", ""),
 ]
-AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-5")
+AI_MODEL = os.environ.get("AI_MODEL", "claude-sonnet-5")
 # Два способа спросить модель. Ключ API нужен, когда программой пользуются другие учителя.
 # Пока она стоит на своём компьютере, проверку делает Claude Code по подписке хозяина.
 AI_BACKEND = os.environ.get("AI_BACKEND", "")  # api, cli или пусто: выбрать само
@@ -494,18 +498,10 @@ def token():
     return h[7:] if h.startswith("Bearer ") else request.cookies.get("token")
 
 
-# ponytail: автовход это обход входа на время разработки, убрать до пилота (решение юзера 2026-09-21).
-# Включается только при запуске `python app.py`, работает лишь для запросов с этого компьютера,
-# выключается при HOST не localhost и в gunicorn остаётся пустым.
-AUTO_LOGIN = ""
-
-
 def current_user():
     if "user" not in g:
         g.user = q1("SELECT u.id, u.name, u.login, u.lang FROM sessions s JOIN users u ON u.id=s.user_id "
                     "WHERE s.token=?", token() or "")
-        if not g.user and AUTO_LOGIN and request.remote_addr in ("127.0.0.1", "::1"):
-            g.user = q1("SELECT id, name, login, lang FROM users WHERE login=?", AUTO_LOGIN)
     return g.user
 
 
@@ -556,6 +552,7 @@ def done(url, **extra):
 def fail(msg, template, **ctx):
     if is_api():
         return {"error": msg}, 400
+    ctx.setdefault("need_code", bool(REGISTER_CODE))
     return render_template(template, error=msg, form=request.form, **ctx), 400
 
 
@@ -614,9 +611,11 @@ def login():
 @app.post("/api/register")
 def register():
     if request.method == "GET":
-        return render_template("register.html")
+        return render_template("register.html", need_code=bool(REGISTER_CODE))
     d = body()
     name, login_, pw = (d.get("name") or "").strip()[:100], (d.get("login") or "").strip().lower(), d.get("password") or ""
+    if REGISTER_CODE and (d.get("code") or "").strip() != REGISTER_CODE:
+        return fail("Неверный код приглашения", "register.html")
     if not name:
         return fail("Укажите имя", "register.html")
     if not re.fullmatch(r"[a-z0-9_.-]{3,40}", login_):
@@ -773,12 +772,6 @@ if __name__ == "__main__":
         assert _dr and near(2.0, 2.0, 0.1) and not near(None, 2, 0.1)
         print("ok")
         sys.exit()
-    AUTO_LOGIN = os.environ.get("AUTO_LOGIN", "teacher")  # AUTO_LOGIN= пустой отключает
     host = os.environ.get("HOST", "127.0.0.1")
     local = host in ("127.0.0.1", "localhost", "::1")
-    if not local:  # отладчик Werkzeug пускает выполнять код, наружу его не открываем
-        AUTO_LOGIN = ""
-    if AUTO_LOGIN:
-        print(f"ВНИМАНИЕ: автовход как «{AUTO_LOGIN}» включён. Это обход входа на время разработки, "
-              f"убрать до пилота. Выключить сейчас: AUTO_LOGIN= .venv/bin/python app.py")
-    app.run(debug=local, host=host, port=8000)
+    app.run(debug=local, host=host, port=int(os.environ.get("PORT", 8000)))

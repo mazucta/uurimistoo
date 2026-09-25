@@ -1,0 +1,22 @@
+# Развёртывание на Render. Free-план: диска нет, база живёт до первого перезапуска.
+# Когда пилот пойдёт всерьёз, план меняется на starter и добавляется блок disk с DB=/data/data.db.
+services:
+  - type: web
+    name: uurimistoo
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    healthCheckPath: /login
+    envVars:
+      - key: BEHIND_PROXY
+        value: "1"
+      - key: PYTHON_VERSION
+        value: "3.13.7"
+      - key: AI_MODEL
+        value: claude-sonnet-5
+      - key: ANTHROPIC_API_KEY
+        sync: false          # ключ задаётся в панели Render, в репозиторий не попадает
+      - key: REGISTER_CODE
+        sync: false          # код приглашения: без него зарегистрироваться нельзя
