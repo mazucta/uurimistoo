@@ -61,7 +61,7 @@
 
 <section class="card">
   <div class="card-head"><h2>{{ _('Что говорит ИИ') }}</h2>
-    <span class="muted small">{{ _('через подписку Claude Code') if backend == 'cli' else _('через ключ API') }}</span>
+    <span class="muted small">{{ _('через подписку Claude Code') if backend == 'cli' else _('через ключ API') if backend == 'api' else _('ключ не задан') }}</span>
     {% if p.ai_status == 'pending' %}<span class="badge warn">{{ _('идёт проверка') }}</span>{% endif %}</div>
   {% if p.ai_status == 'done' %}<p class="pre">{{ p.ai_note }}</p>
   {% elif p.ai_status == 'error' %}<p class="error">{{ _('Проверка не удалась') }}{% if p.ai_note %}: {{ _(p.ai_note) }}{% else %}. {{ _('Нажмите «Проверить заново».') }}{% endif %}</p>

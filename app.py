@@ -322,15 +322,18 @@ def findings_of(pid, kind):
 # ---------- проверка с ИИ ----------
 
 def backend():
-    """Ключ API важнее: он для настоящей работы. Без ключа зовём Claude Code по подписке."""
+    """Ключ API важнее: он для настоящей работы. Без ключа зовём Claude Code по подписке.
+    Нет ни того, ни другого: проверка ИИ выключена, остальное считается как обычно."""
     if AI_BACKEND in ("api", "cli"):
         return AI_BACKEND
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "api"
-    return "cli" if shutil.which(CLAUDE_CLI) else "api"
+    return "cli" if shutil.which(CLAUDE_CLI) else "none"
 
 
 def ask_claude(system, content, schema, tools=None):
+    if backend() == "none":
+        raise RuntimeError("не задан ключ ANTHROPIC_API_KEY на сервере")
     if backend() == "cli":
         return ask_claude_cli(system, content, schema)
     client = anthropic.Anthropic(timeout=CLI_TIMEOUT)  # модель подолгу ходит по источникам

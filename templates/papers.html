@@ -15,7 +15,9 @@
     <button class="btn primary">{{ _('Проверить') }}</button>
   </form>
   <p class="muted small">{{ _('По .docx оформление видно точно, по .pdf оно измеряется и часть правил не проверить. Проверка с ИИ занимает несколько минут.') }}</p>
-  <p class="muted small">{{ _('Проверку делает Claude Code по подписке владельца компьютера. Для других учителей нужен ключ ANTHROPIC_API_KEY.') if backend == 'cli' else _('Проверка идёт через ключ ANTHROPIC_API_KEY.') }}</p>
+  <p class="muted small">{% if backend == 'cli' %}{{ _('Проверку делает Claude Code по подписке владельца компьютера. Для других учителей нужен ключ ANTHROPIC_API_KEY.') }}
+  {%- elif backend == 'api' %}{{ _('Проверка идёт через ключ ANTHROPIC_API_KEY.') }}
+  {%- else %}{{ _('Проверка ИИ выключена: не задан ключ ANTHROPIC_API_KEY. Оформление и числовые условия считаются всё равно.') }}{% endif %}</p>
 </section>
 
 <section class="card">
