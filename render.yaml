@@ -16,7 +16,7 @@ services:
         value: "3.13.7"
       - key: AI_MODEL
         value: claude-sonnet-5
-      - key: ANTHROPIC_API_KEY
-        sync: false          # ключ задаётся в панели Render, в репозиторий не попадает
+      # ANTHROPIC_API_KEY здесь намеренно нет: сначала показываем демо-отчёт без ключа,
+      # ключ добавляется переменной в панели Render, когда проверка нужна вживую.
       - key: REGISTER_CODE
-        sync: false          # код приглашения: без него зарегистрироваться нельзя
+        generateValue: true  # случайный код: посторонний зарегистрироваться не сможет
