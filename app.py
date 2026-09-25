@@ -328,13 +328,19 @@ def backend():
 def ask_claude(system, content, schema, tools=None):
     if backend() == "cli":
         return ask_claude_cli(system, content, schema)
-    r = anthropic.Anthropic().beta.messages.create(
-        model=AI_MODEL, max_tokens=16000, system=system,
-        betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-        output_config={"format": {"type": "json_schema", "schema": schema}},
-        tools=tools or [],
-        messages=[{"role": "user", "content": content}],
-    )
+    client = anthropic.Anthropic(timeout=CLI_TIMEOUT)  # модель подолгу ходит по источникам
+    messages = [{"role": "user", "content": content}]
+    for _ in range(6):  # pause_turn: модель прервалась сама, её нужно продолжить тем же запросом
+        r = client.beta.messages.create(
+            model=AI_MODEL, max_tokens=16000, system=system,
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"format": {"type": "json_schema", "schema": schema}},
+            tools=tools or [],
+            messages=messages,
+        )
+        if r.stop_reason != "pause_turn":
+            break
+        messages += [{"role": "assistant", "content": r.content}]
     if r.stop_reason != "end_turn":
         raise RuntimeError(f"модель не закончила ответ ({r.stop_reason})")
     return json.loads(next(b.text for b in r.content if b.type == "text"))
