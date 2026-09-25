@@ -61,7 +61,13 @@
 <!-- -->
 
     export ANTHROPIC_API_KEY=sk-ant-...   # режим для нескольких учителей
+    .venv/bin/python app.py --ping        # проверка ключа: один короткий запрос
     .venv/bin/python app.py
+
+Ключ берётся в console.anthropic.com: Settings → API keys → Create key, и там же в Billing пополняется баланс. Чтобы ключ не попал в историю команд, его удобно держать в файле:
+
+    printf '%s' 'sk-ant-...' > ~/.anthropic-key && chmod 600 ~/.anthropic-key
+    ANTHROPIC_API_KEY="$(cat ~/.anthropic-key)" .venv/bin/python app.py --ping
 
 Выбор можно закрепить: `AI_BACKEND=cli` или `AI_BACKEND=api`. В режиме подписки Claude Code запускается в пустой папке, без доступа к файлам и без команд: ему разрешены только поиск и открытие страниц. Проверка работы с одиннадцатью источниками занимает около трёх минут.
 

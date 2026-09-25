@@ -773,6 +773,17 @@ def template_globals():
 
 
 if __name__ == "__main__":
+    if "--ping" in sys.argv:  # проверка ключа API: один короткий запрос, стоит доли цента
+        print("режим:", backend(), "| модель:", AI_MODEL)
+        try:
+            answer = anthropic.Anthropic(timeout=60).messages.create(
+                model=AI_MODEL, max_tokens=16,
+                messages=[{"role": "user", "content": "Ответь одним словом: готово"}])
+            print("ключ работает:", "".join(b.text for b in answer.content if b.type == "text").strip(),
+                  f"| токенов: {answer.usage.input_tokens} на входе, {answer.usage.output_tokens} на выходе")
+        except Exception as ex:
+            sys.exit("не вышло: " + ai_error_text(ex))
+        sys.exit()
     if "--check" in sys.argv:
         import docx_read as _dr
         assert _dr and near(2.0, 2.0, 0.1) and not near(None, 2, 0.1)
