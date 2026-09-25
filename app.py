@@ -73,7 +73,7 @@ DEFAULT_REQUIREMENTS = [
     ("Тема раскрыта, выводы следуют из собранных данных", "ai", ""),
     ("Работа написана научным стилем, без разговорных оборотов", "ai", ""),
 ]
-AI_MODEL = os.environ.get("AI_MODEL", "claude-sonnet-5")
+AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-5")  # на Render render.yaml ставит sonnet: там платится за токены
 # Два способа спросить модель. Ключ API нужен, когда программой пользуются другие учителя.
 # Пока она стоит на своём компьютере, проверку делает Claude Code по подписке хозяина.
 AI_BACKEND = os.environ.get("AI_BACKEND", "")  # api, cli или пусто: выбрать само
