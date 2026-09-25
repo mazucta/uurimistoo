@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS findings(
   status TEXT NOT NULL DEFAULT 'unclear', note TEXT NOT NULL DEFAULT '', extra TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS findings_paper ON findings(paper_id, kind, position);
 """
+# Показ без ключа API: если базы ещё нет, берём демонстрационную с готовым отчётом.
+if not os.path.exists(DB) and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db")):
+    import shutil
+    shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db"), DB)
+
 with sqlite3.connect(DB) as _c:
     _c.execute("PRAGMA journal_mode=WAL")
     _c.executescript(SCHEMA)
