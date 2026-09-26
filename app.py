@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS papers(
   id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id),
   student TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '',
   text TEXT NOT NULL DEFAULT '', data BLOB, chars INTEGER NOT NULL DEFAULT 0,
-  ai_status TEXT, ai_note TEXT, verdict TEXT, verdict_note TEXT, uploaded_at REAL NOT NULL);
+  ai_status TEXT, ai_note TEXT, verdict TEXT, verdict_note TEXT, lang TEXT NOT NULL DEFAULT 'uk',
+  uploaded_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS findings(
   id INTEGER PRIMARY KEY, paper_id INTEGER NOT NULL REFERENCES papers(id),
   kind TEXT NOT NULL CHECK(kind IN ('format','req','source','claim','rubric','photo','sign','praise')),
@@ -63,6 +64,8 @@ with sqlite3.connect(DB) as _c:
     for _col in ("verdict", "verdict_note"):  # решение модели о том, сам ли ученик писал работу
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
             _c.execute(f"ALTER TABLE papers ADD COLUMN {_col} TEXT")
+    if "lang" not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
+        _c.execute("ALTER TABLE papers ADD COLUMN lang TEXT NOT NULL DEFAULT 'uk'")
     _c.execute("UPDATE papers SET ai_status='error', ai_note='' WHERE ai_status='pending'")
 
 # Условия, которые проверяются кодом точно. Остальные формулировки достаются ИИ.
@@ -415,7 +418,7 @@ def run_ai(pid):
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
     try:
-        p = con.execute("""SELECT p.id, p.title, p.text, u.id AS teacher_id, u.lang FROM papers p
+        p = con.execute("""SELECT p.id, p.title, p.text, p.lang, u.id AS teacher_id FROM papers p
             JOIN users u ON u.id=p.teacher_id WHERE p.id=?""", (pid,)).fetchone()
         wanted = con.execute("SELECT id, text FROM requirements WHERE teacher_id=? AND rule='ai' ORDER BY position",
                              (p["teacher_id"],)).fetchall()
@@ -423,8 +426,13 @@ def run_ai(pid):
         sources = con.execute("SELECT id, position, label FROM findings WHERE paper_id=? AND kind='source' ORDER BY position",
                               (pid,)).fetchall()
         listing = "\n".join(f"{r['position']}. {r['label']}" for r in sources) or "список источников не найден"
-        speak = {"et": "эстонском", "uk": "украинском"}.get(p["lang"], "украинском")
-        system = AI_PROMPT + f"\n\nsummary, note и все пояснения пиши на {speak} языке."
+        # язык ответа это язык учителя, а не язык работы: работа может быть на любом
+        speak = {"et": "eesti keeles (по-эстонски)", "uk": "українською мовою (по-украински)"}.get(
+            p["lang"], "українською мовою (по-украински)")
+        system = AI_PROMPT + (
+            f"\n\nВЕСЬ твой ответ пиши {speak}: summary, note, good, lost, strengths, signs и любые пояснения. "
+            f"Работа ученика может быть написана на другом языке, это ничего не меняет: цитаты из неё приводи "
+            f"как есть, а свои слова вокруг них пиши {speak}.")
         content = (f"<тема>\n{p['title']}\n</тема>\n\n<условия>\n{conditions}\n</условия>\n\n"
                    f"<критерии>\n{rubric.listing()}\n</критерии>\n\n"
                    f"<источники>\n{listing}\n</источники>\n\n<работа>\n{p['text']}\n</работа>")
@@ -692,9 +700,9 @@ def upload_paper(me):
         return fail("Файл не читается", "papers.html", papers=[], backend=backend(),
                     requirements=requirements_of(me["id"]), rules=RULES)
     text = doc.text()
-    pid = run("""INSERT INTO papers(teacher_id,student,title,filename,text,data,chars,uploaded_at)
-        VALUES(?,?,?,?,?,?,?,?)""", me["id"], (body().get("student") or "").strip()[:100], paper_title(doc),
-        (f.filename or "")[:200], text, data, len(text), time.time()).lastrowid
+    pid = run("""INSERT INTO papers(teacher_id,student,title,filename,text,data,chars,lang,uploaded_at)
+        VALUES(?,?,?,?,?,?,?,?,?)""", me["id"], (body().get("student") or "").strip()[:100], paper_title(doc),
+        (f.filename or "")[:200], text, data, len(text), lang(), time.time()).lastrowid
     check_paper(pid, doc, me["id"], lang(), data, name)
     start_ai(pid)
     return done(f"/papers/{pid}", id=pid)
@@ -715,8 +723,16 @@ def own_paper(me, pid, with_file=False):
 @view("/papers/<int:pid>", "report.html")
 def report(me, pid):
     p = own_paper(me, pid, with_file=True)
-    if p["data"]:  # правила оформления пересчитываем: так они всегда на языке, который выбрал учитель
-        store_findings(pid, "format", format_checks(read_file(p["data"], p["filename"].lower()), lang()))
+    if p["data"]:  # оформление и след работы над файлом пересчитываем: язык должен совпадать с выбранным
+        doc = read_file(p["data"], p["filename"].lower())
+        store_findings(pid, "format", format_checks(doc, lang()))
+        code_signs = file_signs(doc, p["data"], p["filename"].lower(), lang())
+        ai_signs = [dict(r, ref=None) for r in q("SELECT label, status, note FROM findings "
+                                                 "WHERE paper_id=? AND kind='sign' AND position>=100 ORDER BY position", pid)]
+        store_findings(pid, "sign", code_signs)
+        db().executemany("INSERT INTO findings(paper_id,kind,position,label,status,note) VALUES(?,'sign',?,?,?,?)",
+                         [(pid, 100 + i, r["label"], r["status"], r["note"]) for i, r in enumerate(ai_signs, 1)])
+        db().commit()
     p.pop("data")
     marks = findings_of(pid, "rubric")
     praise = findings_of(pid, "praise")
@@ -731,6 +747,7 @@ def report(me, pid):
 @view("/papers/<int:pid>/recheck", method="POST")
 def recheck(me, pid):
     p = own_paper(me, pid, with_file=True)
+    run("UPDATE papers SET lang=? WHERE id=?", lang(), pid)  # проверка пойдёт на языке, выбранном сейчас
     if p["data"]:
         check_paper(pid, read_file(p["data"], p["filename"].lower()), me["id"], lang(),
                     p["data"], p["filename"].lower())
