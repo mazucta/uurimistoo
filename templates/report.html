@@ -12,7 +12,7 @@
   </div>
 </div>
 
-{% if score is not none %}
+{% if score is not none and checks.do_rubric %}
 <section class="card score-card">
   <div class="card-head"><h2>{{ _('Предварительная оценка') }}</h2>
     <span class="muted small">{{ _('баллы предлагает ИИ, ставит учитель') }}</span></div>
@@ -44,7 +44,7 @@
 {% endif %}
 {% endif %}
 
-<section class="card">
+{% if checks.do_authorship %}<section class="card">
   <div class="card-head"><h2>{{ _('Сам ли ученик писал работу') }}</h2>
     {% if p.verdict %}<span class="badge {{ 'ok' if p.verdict == 'student' else 'danger' if p.verdict == 'ai' else 'warn' }}">
       {{ _('похоже на работу ученика') if p.verdict == 'student' else _('есть признаки текста от ИИ') if p.verdict == 'ai' else _('не понять') }}</span>{% endif %}</div>
@@ -57,7 +57,7 @@
     {% else %}<li class="empty">{{ _('Пока нечего показать') }}</li>{% endfor %}
   </ul>
   <p class="muted small">{{ _('Это наблюдения, а не доказательство: по тексту нельзя надёжно установить, кто его написал. Решает учитель.') }}</p>
-</section>
+</section>{% endif %}
 
 <section class="card">
   <div class="card-head"><h2>{{ _('Что говорит ИИ') }}</h2>
@@ -83,19 +83,45 @@
 
 <div class="review">
   <div>
-    <section class="card">
+    {% if checks.do_format %}<section class="card">
       <div class="card-head"><h2>{{ _('Оформление') }}</h2>
         <span class="muted small">{{ format|selectattr('status', 'equalto', 'pass')|list|length }} / {{ format|length }}</span></div>
       {{ checklist(format, _('Оформление не проверено')) }}
-    </section>
+    </section>{% endif %}
 
-    <section class="card">
+    {% if checks.do_req %}<section class="card">
       <div class="card-head"><h2>{{ _('Условия учителя') }}</h2>
         <span class="muted small">{{ reqs|selectattr('status', 'equalto', 'pass')|list|length }} / {{ reqs|length }}</span></div>
       {{ checklist(reqs, _('Условий пока нет')) }}
-    </section>
+    </section>{% endif %}
 
+    {% if checks.do_sense %}
     <section class="card">
+      <div class="card-head"><h2>{{ _('Смысл и содержание') }}</h2>
+        <span class="muted small">{{ _('где мысль не сходится или не доведена до конца') }}</span></div>
+      <ul class="notes">
+        {% for c in sense %}
+        <li><q>{{ c.label }}</q><p>{{ c.note }}</p>
+          {% if c.extra %}<div class="small good">→ {{ c.extra }}</div>{% endif %}</li>
+        {% else %}<li class="empty">{{ _('Замечаний по смыслу нет') }}</li>{% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if checks.do_language %}
+    <section class="card">
+      <div class="card-head"><h2>{{ _('Язык и грамматика') }}</h2>
+        <span class="muted small">{{ lang_notes|length }}</span></div>
+      <ul class="lang-list">
+        {% for c in lang_notes %}
+        <li><span class="badge tiny">{{ _(c.status) }}</span>
+          <s>{{ c.label }}</s> <b>{{ c.note }}</b></li>
+        {% else %}<li class="empty">{{ _('Заметных ошибок языка нет') }}</li>{% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if checks.do_sources %}<section class="card">
       <div class="card-head"><h2>{{ _('Спорные места') }}</h2>
         <span class="muted small">{{ _('текст со ссылкой, который источник не подтверждает') }}</span></div>
       <ul class="notes">
@@ -110,11 +136,11 @@
         </li>
         {% else %}<li class="empty">{{ _('Таких мест не нашлось') }}</li>{% endfor %}
       </ul>
-    </section>
+    </section>{% endif %}
   </div>
 
   <aside class="side">
-    <div class="card">
+    {% if checks.do_photos %}<div class="card">
       <div class="card-head"><h3>{{ _('Фото и рисунки') }} <span class="muted">{{ photos|length }}</span></h3></div>
       <ul class="checks">
         {% for f in photos %}
@@ -126,9 +152,9 @@
         {% else %}<li class="empty">{{ _('Фотографий в работе нет') }}</li>{% endfor %}
       </ul>
       {% if photos %}<p class="muted small">{{ _('Метаданные слетают при пересохранении и скриншоте, поэтому «метаданных нет» ничего не доказывает.') }}</p>{% endif %}
-    </div>
+    </div>{% endif %}
 
-    <div class="card">
+    {% if checks.do_sources %}<div class="card">
       <div class="card-head"><h3>{{ _('Источники') }} <span class="muted">{{ sources|length }}</span></h3></div>
       <ol class="source-list">
         {% for s in sources %}
@@ -144,7 +170,7 @@
         </li>
         {% else %}<li class="empty">{{ _('В работе нет раздела со списком источников') }}</li>{% endfor %}
       </ol>
-    </div>
+    </div>{% endif %}
   </aside>
 </div>
 {% endblock %}

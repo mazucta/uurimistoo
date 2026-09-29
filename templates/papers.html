@@ -74,6 +74,17 @@
     {% endif %}
   </div>
 
+  <h3 class="sub-head">{{ _('Что проверять') }}</h3>
+  <form class="switches checks-form" method="post" action="/profiles/{{ profile.id }}/checks">
+    {% for key, name in [('do_format', _('Оформление')), ('do_req', _('Условия учителя')),
+                         ('do_sense', _('Смысл и содержание')), ('do_language', _('Язык и грамматика')),
+                         ('do_sources', _('Источники и спорные места')), ('do_rubric', _('Оценка по критериям')),
+                         ('do_authorship', _('Признаки авторства')), ('do_photos', _('Фото и рисунки'))] %}
+    <label><input type="checkbox" name="{{ key }}" value="1" {{ 'checked' if settings[key] }}> {{ name }}</label>
+    {% endfor %}
+    <button class="btn small">{{ _('Сохранить') }}</button>
+  </form>
+
   <h3 class="sub-head">{{ _('Оформление') }}</h3>
   <form class="rules-form" method="post" action="/profiles/{{ profile.id }}/rules">
     <label class="field"><span>{{ _('Поля: левое, правое, верхнее, нижнее, см') }}</span>
