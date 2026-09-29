@@ -7,6 +7,10 @@
   <div><h1>{{ m.topic }}</h1>
     <p class="muted">{{ _(m.name) }}{% if m.grade %} · {{ m.grade }}{% endif %} · {{ m.created_at|dt }}</p></div>
   <div class="row-meta">
+    {% if m.status == 'done' and not edit %}
+    <a class="btn" href="/materials/{{ m.id }}?edit">{{ _('Править') }}</a>
+    <a class="btn primary" href="/materials/{{ m.id }}/file">{{ _('Скачать файл') }}</a>
+    {% endif %}
     <form method="post" action="/materials/{{ m.id }}/again"><button class="btn">{{ _('Переделать') }}</button></form>
     <form method="post" action="/materials/{{ m.id }}/delete" onsubmit="return confirm('{{ _('Удалить материал?') }}')"><button class="btn-link danger">{{ _('Удалить') }}</button></form>
   </div>
@@ -18,9 +22,56 @@
 <div class="banner danger">{{ _('Не получилось') }}{% if m.note %}: {{ _(m.note) }}{% endif %}</div>
 {% endif %}
 
-{% if m.kind == 'slides' and m.data.slides %}
+{% if edit %}
+<form class="card edit-form" method="post" action="/materials/{{ m.id }}/edit">
+  <div class="card-head"><h2>{{ _('Правка') }}</h2>
+    <span class="muted small">{{ _('Пустой кусок будет убран. Каждый тезис или вариант ответа с новой строки.') }}</span></div>
+  {% if m.kind != 'ideas' %}
+  <label class="field"><span>{{ _('Заголовок') }}</span><input name="title" value="{{ m.data.title or m.topic }}"></label>
+  {% endif %}
+
+  {% for item in items %}
+  {% set idx = loop.index0 %}
+  <fieldset class="piece">
+    <legend>{{ loop.index }}</legend>
+    {% for name, kind in fields %}
+    <label class="field"><span>{{ _(name) }}</span>
+      {% if kind == 'lines' %}<textarea name="{{ idx }}-{{ name }}" rows="3">{{ (item[name] or [])|join('\n') }}</textarea>
+      {% elif kind == 'text' %}<textarea name="{{ idx }}-{{ name }}" rows="2">{{ item[name] }}</textarea>
+      {% elif kind == 'level' %}<select name="{{ idx }}-{{ name }}">
+        {% for value, label in [('easy', _('лёгкий')), ('medium', _('средний')), ('hard', _('трудный'))] %}
+        <option value="{{ value }}" {{ 'selected' if item[name] == value }}>{{ label }}</option>{% endfor %}
+      </select>
+      {% elif kind == 'kind' %}<select name="{{ idx }}-{{ name }}">
+        {% for value, label in [('choice', _('выбор')), ('short', _('короткий ответ')), ('open', _('развёрнутый ответ'))] %}
+        <option value="{{ value }}" {{ 'selected' if item[name] == value }}>{{ label }}</option>{% endfor %}
+      </select>
+      {% else %}<input name="{{ idx }}-{{ name }}" value="{{ item[name] }}">{% endif %}
+    </label>
+    {% endfor %}
+  </fieldset>
+  {% endfor %}
+
+  <fieldset class="piece new">
+    <legend>+</legend>
+    {% for name, kind in fields %}
+    <label class="field"><span>{{ _(name) }}</span>
+      {% if kind in ('lines', 'text') %}<textarea name="{{ items|length }}-{{ name }}" rows="2"></textarea>
+      {% else %}<input name="{{ items|length }}-{{ name }}">{% endif %}</label>
+    {% endfor %}
+  </fieldset>
+
+  <div class="row-meta">
+    <button class="btn primary">{{ _('Сохранить') }}</button>
+    <a class="btn" href="/materials/{{ m.id }}">{{ _('Отмена') }}</a>
+  </div>
+</form>
+
+{% else %}
+
+{% if m.kind == 'slides' %}
 <div class="slides">
-  {% for s in m.data.slides %}
+  {% for s in items %}
   <section class="card slide">
     <div class="card-head"><h2><span class="muted">{{ loop.index }}.</span> {{ s.title }}</h2></div>
     <ul class="points">{% for p in s.points %}<li>{{ p }}</li>{% endfor %}</ul>
@@ -31,12 +82,12 @@
 </div>
 {% endif %}
 
-{% if m.kind == 'quiz' and m.data.questions %}
+{% if m.kind == 'quiz' %}
 <section class="card">
   <div class="card-head"><h2>{{ m.data.title or _('Проверочные вопросы') }}</h2>
-    <span class="muted small">{{ m.data.questions|length }}</span></div>
+    <span class="muted small">{{ items|length }}</span></div>
   <ol class="quiz">
-    {% for q in m.data.questions %}
+    {% for q in items %}
     <li>
       <div class="q-head"><span class="badge tiny {{ 'ok' if q.level == 'easy' else 'warn' if q.level == 'medium' else 'danger' }}">
         {{ _('лёгкий') if q.level == 'easy' else _('средний') if q.level == 'medium' else _('трудный') }}</span>
@@ -49,9 +100,9 @@
 </section>
 {% endif %}
 
-{% if m.kind == 'ideas' and m.data.ideas %}
+{% if m.kind == 'ideas' %}
 <div class="ideas">
-  {% for i in m.data.ideas %}
+  {% for i in items %}
   <section class="card">
     <div class="card-head"><h2>{{ i.title }}</h2>
       <span class="muted small">{{ i.minutes }} {{ _('мин') }}</span></div>
@@ -61,5 +112,7 @@
   </section>
   {% endfor %}
 </div>
+{% endif %}
+
 {% endif %}
 {% endblock %}

@@ -2,3 +2,5 @@ flask
 anthropic
 pypdf
 gunicorn
+python-pptx
+python-docx

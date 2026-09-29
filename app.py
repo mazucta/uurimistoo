@@ -5,10 +5,10 @@
 что написано в работе рядом со ссылкой на них, и условия, которые нельзя посчитать.
 """
 import io, json, os, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, threading, time
-from flask import Flask, g, request, render_template, abort, redirect
+from flask import Flask, g, request, render_template, abort, redirect, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 import anthropic
-import docx_read, images, pdf_read, rubric
+import docx_read, export, images, pdf_read, rubric
 from i18n import LANGS, translate
 
 DB = os.environ.get("DB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
@@ -1102,7 +1102,73 @@ def material(me, mid):
     except ValueError:
         m["data"] = {}
     m["name"] = MATERIALS[m["kind"]]["name"] if m["kind"] in MATERIALS else m["kind"]
-    return {"m": m}
+    key, fields, items = material_items(m)
+    return {"m": m, "key": key, "fields": fields, "items": items,
+            "edit": request.args.get("edit") is not None}
+
+
+# Что учитель правит руками: поля материала и их вид на странице.
+MATERIAL_FIELDS = {
+    "slides": ("slides", [("title", "line"), ("points", "lines"), ("question", "line"), ("notes", "text")]),
+    "quiz": ("questions", [("question", "text"), ("kind", "kind"), ("options", "lines"),
+                           ("answer", "text"), ("level", "level")]),
+    "ideas": ("ideas", [("title", "line"), ("what", "text"), ("needs", "line"),
+                        ("minutes", "number"), ("assess", "text")]),
+}
+
+
+def material_items(m):
+    """Список правимых кусков материала: слайды, вопросы или идеи."""
+    key, fields = MATERIAL_FIELDS.get(m["kind"], ("items", []))
+    return key, fields, (m["data"].get(key) or [])
+
+
+@view("/materials/<int:mid>/edit", method="POST")
+def edit_material(me, mid):
+    m = q1("SELECT * FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
+    try:
+        data = json.loads(m["content"] or "{}")
+    except ValueError:
+        data = {}
+    key, fields = MATERIAL_FIELDS.get(m["kind"], ("items", []))
+    d, items = body(), []
+    for i in range(0, 60):
+        if not any(f"{i}-{name}" in d for name, _kind in fields):
+            continue
+        item = {}
+        for name, kind in fields:
+            raw = (d.get(f"{i}-{name}") or "").strip()
+            if kind == "lines":
+                item[name] = [line.strip() for line in raw.split("\n") if line.strip()]
+            elif kind == "number":
+                item[name] = int(re.sub(r"\D", "", raw) or 0)
+            else:
+                item[name] = raw[:2000]
+        if any(item[name] for name, _kind in fields):  # пустой кусок значит «убрать»
+            items.append(item)
+    data[key] = items
+    if "title" in d:
+        data["title"] = (d.get("title") or "").strip()[:300]
+    run("UPDATE materials SET content=? WHERE id=?", json.dumps(data, ensure_ascii=False), mid)
+    return done(f"/materials/{mid}")
+
+
+@view("/materials/<int:mid>/file")
+def material_file(me, mid):
+    m = q1("SELECT * FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
+    try:
+        data = json.loads(m["content"] or "{}")
+    except ValueError:
+        data = {}
+    t = lambda text: translate(text, lang())
+    labels = {"question": t("Вопрос классу"), "subtitle": m["grade"] or t("Материалы к уроку"),
+              "answers": t("Ответы для учителя"), "minutes": t("мин"), "needs": t("Нужно"),
+              "assess": t("Как понять, что получилось"),
+              "easy": t("лёгкий"), "medium": t("средний"), "hard": t("трудный")}
+    title = data.get("title") or m["topic"]
+    suffix, (mime, blob) = export.build(m["kind"], title, data, labels)
+    name = re.sub(r'[\\/:*?"<>|]+', " ", title).strip()[:80] or "material"
+    return send_file(io.BytesIO(blob), as_attachment=True, download_name=f"{name}.{suffix}", mimetype=mime)
 
 
 @view("/materials/<int:mid>/again", method="POST")
