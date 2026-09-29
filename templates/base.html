@@ -23,6 +23,7 @@
     <span class="langs">{% for code in langs %}<a class="{{ 'on' if code == lang }}" href="?lang={{ code }}">{{ code|upper }}</a>{% endfor %}</span>
     <span class="me-name">{{ me.name }}</span>
     <form method="post" action="/logout"><button class="btn-link">{{ _('Выйти') }}</button></form>
+    <form method="post" action="/logout"><input type="hidden" name="all" value="1"><button class="btn-link" title="{{ _('Выйти везде') }}">{{ _('Выйти везде') }}</button></form>
   </div>
 </div></header>
 {% endif %}

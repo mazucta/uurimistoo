@@ -3,6 +3,9 @@
 {% block head %}{% if p.ai_status == 'pending' %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block main %}
 <nav class="crumbs"><a href="/papers">{{ _('Проверки работ') }}</a> / {{ p.filename }}</nav>
+{% if stale %}
+<div class="banner warn">{{ _('Правила профиля изменились после проверки. Нажмите «Проверить заново», чтобы отчёт совпал с ними.') }}</div>
+{% endif %}
 <div class="page-head">
   <div><h1>{{ p.title or p.filename }}</h1>
     <p class="muted">{% if p.student %}{{ p.student }} · {% endif %}{{ p.chars }} {{ _('знаков') }} · {{ p.uploaded_at|dt }}{% if profile %} · {{ _(profile) }}{% endif %}</p></div>
@@ -53,7 +56,7 @@
     {% for s in signs %}
     <li class="{{ 'pass' if s.status == 'student' else 'fail' if s.status == 'ai' else '' }}">
       <span class="mark">{{ '✓' if s.status == 'student' else '✗' if s.status == 'ai' else '·' }}</span>
-      <span class="grow">{{ s.label }}{% if s.note %} <span class="muted small">{{ s.note }}</span>{% endif %}</span></li>
+      <span class="grow">{{ _(s.label) }}{% if s.note %} <span class="muted small">{{ s.note }}</span>{% endif %}</span></li>
     {% else %}<li class="empty">{{ _('Пока нечего показать') }}</li>{% endfor %}
   </ul>
   <p class="muted small">{{ _('Это наблюдения, а не доказательство: по тексту нельзя надёжно установить, кто его написал. Решает учитель.') }}</p>
@@ -62,6 +65,7 @@
 <section class="card">
   <div class="card-head"><h2>{{ _('Что говорит ИИ') }}</h2>
     <span class="muted small">{{ _('через подписку Claude Code') if backend == 'cli' else _('через ключ API') if backend == 'api' else _('ключ не задан') }}</span>
+    <a class="small" href="/papers/{{ p.id }}/sent">{{ _('Что уходит в модель') }}</a>
     {% if p.ai_status == 'pending' %}<span class="badge warn">{{ _('идёт проверка') }}</span>{% endif %}</div>
   {% if p.ai_status == 'done' %}<p class="pre">{{ p.ai_note }}</p>
   {% elif p.ai_status == 'error' %}<p class="error">{{ _('Проверка не удалась') }}{% if p.ai_note %}: {{ _(p.ai_note) }}{% else %}. {{ _('Нажмите «Проверить заново».') }}{% endif %}</p>
@@ -74,7 +78,7 @@
   {% for c in items %}
   <li class="{{ c.status }}">
     <span class="mark">{{ '✓' if c.status == 'pass' else '✗' if c.status == 'fail' else '·' }}</span>
-    <span class="grow">{{ c.label }}{% if c.note %} <span class="muted small">{{ c.note }}</span>{% endif %}</span>
+    <span class="grow">{{ _(c.label) }}{% if c.note %} <span class="muted small">{{ c.note }}</span>{% endif %}</span>
     {% if c.auto is defined and not c.auto %}<span class="badge tiny">{{ _('ИИ') }}</span>{% endif %}
   </li>
   {% else %}<li class="empty">{{ empty }}</li>{% endfor %}

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Что уходит в модель') }}{% endblock %}
+{% block main %}
+<nav class="crumbs"><a href="/papers">{{ _('Проверки работ') }}</a> /
+  <a href="/papers/{{ p.id }}">{{ p.title or p.filename }}</a> / {{ _('Что уходит в модель') }}</nav>
+<div class="page-head">
+  <div><h1>{{ _('Что уходит в модель') }}</h1>
+    <p class="muted">{{ _('Имя ученика и сам файл не передаются. Передаётся текст работы: если в нём есть личные данные, они уйдут вместе с ним.') }}</p></div>
+</div>
+
+{% if not will_send %}
+<div class="banner ok">{{ _('В этом профиле все проверки с ИИ выключены, поэтому наружу ничего не уходит.') }}</div>
+{% endif %}
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Задание модели') }}</h2></div>
+  <p class="pre small">{{ prompt }}</p>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Данные работы') }}</h2>
+    <span class="muted small">{{ content|length }} {{ _('знаков') }}</span></div>
+  <p class="pre small">{{ content }}</p>
+</section>
+{% endblock %}

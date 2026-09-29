@@ -4,7 +4,9 @@
 и числовые условия учителя. Что достаётся ИИ: существуют ли источники, подтверждают ли они то,
 что написано в работе рядом со ссылкой на них, и условия, которые нельзя посчитать.
 """
-import io, json, os, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, threading, time
+import hashlib, io, json, os, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, threading, time
+from urllib.parse import urlparse
+
 from flask import Flask, g, request, render_template, abort, redirect, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 import anthropic
@@ -19,17 +21,22 @@ if os.environ.get("BEHIND_PROXY"):  # на Render схему и адрес кл�
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # работа с фотографиями столько весит с запасом
 REGISTER_CODE = os.environ.get("REGISTER_CODE", "")  # пусто: регистрация открыта
-LOGIN_TRIES = 8          # столько неудачных попыток входа подряд,
-LOGIN_PAUSE = 15 * 60    # потом логин отдыхает столько секунд
-# ponytail: счётчик попыток живёт в процессе; при нескольких воркерах нужен общий, например в базе
-attempts = {}
+LOGIN_TRIES = 8              # столько неудачных попыток входа подряд,
+LOGIN_PAUSE = 15 * 60        # потом логин отдыхает столько секунд
+REGISTER_TRIES = 5           # регистраций с одного адреса в час
+SESSION_DAYS = 30            # столько живёт сессия, дальше нужен новый вход
+AI_PER_HOUR = 20             # проверок и материалов на учителя в час: дороже этого не бывает нужно
+MAX_AI_CHARS = 120_000       # столько текста работы уходит в модель, остальное обрезается
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, login TEXT UNIQUE NOT NULL, pw_hash TEXT NOT NULL,
-  lang TEXT NOT NULL DEFAULT 'ru', created_at REAL NOT NULL);
+  lang TEXT NOT NULL DEFAULT 'uk', readonly INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions(
   token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS limits(
+  key TEXT NOT NULL, at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS limits_key ON limits(key, at);
 CREATE TABLE IF NOT EXISTS profiles(
   id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id),
   name TEXT NOT NULL, rules TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL);
@@ -42,7 +49,7 @@ CREATE TABLE IF NOT EXISTS papers(
   student TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '',
   text TEXT NOT NULL DEFAULT '', data BLOB, chars INTEGER NOT NULL DEFAULT 0,
   ai_status TEXT, ai_note TEXT, verdict TEXT, verdict_note TEXT, lang TEXT NOT NULL DEFAULT 'uk',
-  profile_id INTEGER REFERENCES profiles(id), uploaded_at REAL NOT NULL);
+  profile_id INTEGER REFERENCES profiles(id), rules_hash TEXT NOT NULL DEFAULT '', uploaded_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS materials(
   id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id),
   kind TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '', grade TEXT NOT NULL DEFAULT '',
@@ -56,9 +63,9 @@ CREATE TABLE IF NOT EXISTS findings(
   status TEXT NOT NULL DEFAULT 'unclear', note TEXT NOT NULL DEFAULT '', extra TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS findings_paper ON findings(paper_id, kind, position);
 """
-# Показ без ключа API: если базы ещё нет, берём демонстрационную с готовым отчётом.
-# DEMO=0 отключает это, так делает seed.py, когда заводит чистую базу.
-if (os.environ.get("DEMO", "1") != "0" and not os.path.exists(DB)
+# Показ без ключа API: по DEMO=1 берём демонстрационную базу с готовым отчётом и входом «только просмотр».
+# По умолчанию выключено: рабочее окружение не должно случайно получить публичный аккаунт.
+if (os.environ.get("DEMO") == "1" and not os.path.exists(DB)
         and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db"))):
     import shutil
     shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db"), DB)
@@ -73,11 +80,15 @@ with sqlite3.connect(DB) as _c:
         _c.executescript("ALTER TABLE findings RENAME TO findings_old;" + SCHEMA
                          + f"INSERT INTO findings({_columns}) SELECT {_columns} FROM findings_old;"
                          + "DROP TABLE findings_old;")
+    if "readonly" not in {r[1] for r in _c.execute("PRAGMA table_info(users)")}:
+        _c.execute("ALTER TABLE users ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0")
     for _col in ("verdict", "verdict_note"):  # решение модели о том, сам ли ученик писал работу
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
             _c.execute(f"ALTER TABLE papers ADD COLUMN {_col} TEXT")
     if "lang" not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
         _c.execute("ALTER TABLE papers ADD COLUMN lang TEXT NOT NULL DEFAULT 'uk'")
+    if "rules_hash" not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
+        _c.execute("ALTER TABLE papers ADD COLUMN rules_hash TEXT NOT NULL DEFAULT ''")
     for _table in ("papers", "requirements"):  # профили проверки появились 2026-09-29
         if "profile_id" not in {r[1] for r in _c.execute(f"PRAGMA table_info({_table})")}:
             _c.execute(f"ALTER TABLE {_table} ADD COLUMN profile_id INTEGER REFERENCES profiles(id)")
@@ -374,9 +385,9 @@ def format_checks(doc, lang_, rules=None):
     def add(key, ok, want="", found=""):
         note = " · ".join(x for x in (want, found) if x)
         if key in doc.unknown:  # например отбивку абзаца по PDF не измерить
-            out.append({"label": t(key), "status": "unclear", "note": f"{want} · {t('по этому файлу не проверить')}"})
+            out.append({"label": key, "status": "unclear", "note": f"{want} · {t('по этому файлу не проверить')}"})
         else:
-            out.append({"label": t(key), "status": "pass" if ok else "fail", "note": note})
+            out.append({"label": key, "status": "pass" if ok else "fail", "note": note})
 
     sides = [("left", "левое"), ("right", "правое"), ("top", "верхнее"), ("bottom", "нижнее")]
     want = f"{t('надо')} {' / '.join(n(r[k]) for k, _ in sides)} {t('см')}"
@@ -404,7 +415,7 @@ def format_checks(doc, lang_, rules=None):
         if key == "Выравнивание по ширине" and not r.get("justify"):
             continue
         if not body:  # работа без разделов: проверять правила абзаца не на чем
-            out.append({"label": t(key), "status": "unclear", "note": t("основной текст не найден")})
+            out.append({"label": key, "status": "unclear", "note": t("основной текст не найден")})
             continue
         wrong = [p for p in body if not ok_if(p)]
         status, found = sample(body, wrong, lang_)
@@ -419,7 +430,7 @@ def format_checks(doc, lang_, rules=None):
         wrong = [h for h in same if not (near(h.get("size"), size, 0.5) and h.get("bold")
                                          and (level > 1 or h.get("page_break")))]
         if not same:  # работа без заголовков третьего уровня это не нарушение, но учителю видно
-            out.append({"label": t(key), "status": "unclear", "note": f"{want} · {t('таких заголовков нет')}"})
+            out.append({"label": key, "status": "unclear", "note": f"{want} · {t('таких заголовков нет')}"})
         else:
             status, found = sample(same, wrong, lang_)
             add(key, status == "pass", want, found)
@@ -475,23 +486,28 @@ def file_signs(doc, data, filename, lang_):
         hours, minutes = divmod(m.get("minutes", 0), 60)
         spent = f"{hours} {t('ч')} {minutes} {t('мин')}" if hours else f"{minutes} {t('мин')}"
         long_enough = m.get("minutes", 0) >= 120 or m.get("revisions", 0) >= 20
-        out.append({"label": t("Работу писали"), "status": "student" if long_enough else "unclear",
+        out.append({"label": "Работу писали", "status": "student" if long_enough else "unclear",
                     "note": f"{spent}, {t('правок')}: {m.get('revisions', 0)}"})
     if m.get("created") or m.get("modified"):
         same_day = m.get("created", "")[:10] == m.get("modified", "")[:10]
-        out.append({"label": t("Файл создан и изменён"),
+        out.append({"label": "Файл создан и изменён",
                     "status": "unclear" if same_day else "student",
                     "note": f"{m.get('created') or '—'} … {m.get('modified') or '—'}"})
     who = ", ".join(filter(None, (m.get("author"), m.get("editor"))))
     if who:
-        out.append({"label": t("В свойствах файла указаны"), "status": "unclear", "note": who[:120]})
+        out.append({"label": "В свойствах файла указаны", "status": "unclear", "note": who[:120]})
     if m.get("program"):
-        out.append({"label": t("Работу делали в программе"), "status": "unclear", "note": m["program"][:120]})
+        out.append({"label": "Работу делали в программе", "status": "unclear", "note": m["program"][:120]})
     return out
+
+
+def rules_hash(rules):
+    return hashlib.sha256(json.dumps(rules, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
 def check_paper(pid, doc, teacher_id, lang_, data=b"", filename="", profile=None):
     r = rules_of(profile)
+    run("UPDATE papers SET rules_hash=? WHERE id=?", rules_hash(r), pid)
     store_findings(pid, "format", format_checks(doc, lang_, r) if r["do_format"] else [])
     store_findings(pid, "req", check_requirements(doc, requirements_of(teacher_id, (profile or {}).get("id")))
                    if r["do_req"] else [])
@@ -604,6 +620,26 @@ def ask_claude_cli(system, content, schema):
     return json.loads(found[0])
 
 
+def ai_content(p, conditions, listing, r):
+    """Ровно то, что уйдёт в модель. Этот же текст учитель может посмотреть до отправки."""
+    content = f"<тема>\n{p['title']}\n</тема>\n\n"
+    if r["do_req"]:
+        content += f"<условия>\n{conditions}\n</условия>\n\n"
+    if r["do_rubric"]:
+        content += f"<критерии>\n{rubric.listing()}\n</критерии>\n\n"
+    if r["do_sources"]:
+        content += f"<источники>\n{listing}\n</источники>\n\n"
+    text = p["text"] or ""
+    if len(text) > MAX_AI_CHARS:
+        text = text[:MAX_AI_CHARS] + "\n[…]"
+    return content + f"<работа>\n{text}\n</работа>"
+
+
+def wants_ai(rules):
+    """Есть ли хоть одна проверка, которой нужна модель."""
+    return any(rules.get(key) for key in AI_PARTS)
+
+
 def run_ai(pid):
     """Проверка в фоне. Имя ученика в модель не уходит: только текст работы и её источники."""
     con = sqlite3.connect(DB)
@@ -628,14 +664,7 @@ def run_ai(pid):
             f"\n\nВЕСЬ твой ответ пиши {speak}: summary, note, good, lost, strengths, signs и любые пояснения. "
             f"Работа ученика может быть написана на другом языке, это ничего не меняет: цитаты из неё приводи "
             f"как есть, а свои слова вокруг них пиши {speak}.")
-        content = f"<тема>\n{p['title']}\n</тема>\n\n"
-        if r["do_req"]:
-            content += f"<условия>\n{conditions}\n</условия>\n\n"
-        if r["do_rubric"]:
-            content += f"<критерии>\n{rubric.listing()}\n</критерии>\n\n"
-        if r["do_sources"]:
-            content += f"<источники>\n{listing}\n</источники>\n\n"
-        content += f"<работа>\n{p['text']}\n</работа>"
+        content = ai_content(p, conditions, listing, r)
         # web-инструменты нужны только для источников, без них проверка вдвое дешевле и быстрее
         tools = [{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 20},
                  {"type": "web_search_20260209", "name": "web_search", "max_uses": 20}] if r["do_sources"] else []
@@ -724,9 +753,16 @@ def make_material(mid):
         con.close()
 
 
-def start_material(mid):
-    run("UPDATE materials SET status='pending', note='' WHERE id=?", mid)
+def start_material(mid, teacher_id):
+    if run("UPDATE materials SET status='pending', note='' WHERE id=? AND status IS NOT 'pending'",
+           mid).rowcount == 0:
+        return True
+    if not used(f"ai:{teacher_id}", 3600, AI_PER_HOUR):
+        run("UPDATE materials SET status='error', note=? WHERE id=?",
+            "слишком много проверок за час, попробуйте позже", mid)
+        return False
     threading.Thread(target=make_material, args=(mid,), daemon=True).start()
+    return True
 
 
 def ai_error_text(ex):
@@ -744,9 +780,20 @@ def ai_error_text(ex):
     return next((text for cls, text in known if isinstance(ex, cls)), f"{type(ex).__name__}: {ex}"[:300])
 
 
-def start_ai(pid):
-    run("UPDATE papers SET ai_status='pending', ai_note=NULL WHERE id=?", pid)
+def start_ai(pid, teacher_id, rules=None):
+    """Проверка запускается, только если её ждут, она ещё не идёт и часовой лимит не исчерпан."""
+    if rules is not None and not wants_ai(rules):  # в профиле выключены все проверки с ИИ
+        run("UPDATE papers SET ai_status=NULL, ai_note='' WHERE id=?", pid)
+        return True
+    if run("UPDATE papers SET ai_status='pending', ai_note=NULL WHERE id=? AND ai_status IS NOT 'pending'",
+           pid).rowcount == 0:
+        return True  # уже идёт, второй поток не нужен
+    if not used(f"ai:{teacher_id}", 3600, AI_PER_HOUR):
+        run("UPDATE papers SET ai_status='error', ai_note=? WHERE id=?",
+            "слишком много проверок за час, попробуйте позже", pid)
+        return False
     threading.Thread(target=run_ai, args=(pid,), daemon=True).start()
+    return True
 
 
 # ---------- вход и язык ----------
@@ -759,15 +806,39 @@ def body():
     return request.get_json(silent=True) or request.form
 
 
+def as_int(d, key, default=None):
+    """Число из формы или из JSON: обычный dict не знает про type=int у MultiDict."""
+    try:
+        return int(str(d.get(key)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def token():
     h = request.headers.get("Authorization", "")
     return h[7:] if h.startswith("Bearer ") else request.cookies.get("token")
 
 
+def token_hash(value):
+    """В базе лежит только хеш: утечка базы не даёт готовых токенов входа."""
+    return hashlib.sha256((value or "").encode()).hexdigest()
+
+
+def used(key, window, limit):
+    """Счётчик в базе: сколько раз ключ срабатывал за последние window секунд. Общий для всех воркеров."""
+    now = time.time()
+    run("DELETE FROM limits WHERE at < ?", now - max(window, 86400))
+    hits = q1("SELECT COUNT(*) AS n FROM limits WHERE key=? AND at > ?", key, now - window)["n"]
+    if hits >= limit:
+        return False
+    run("INSERT INTO limits(key, at) VALUES(?,?)", key, now)
+    return True
+
+
 def current_user():
     if "user" not in g:
-        g.user = q1("SELECT u.id, u.name, u.login, u.lang FROM sessions s JOIN users u ON u.id=s.user_id "
-                    "WHERE s.token=?", token() or "")
+        g.user = q1("SELECT u.id, u.name, u.login, u.lang, u.readonly FROM sessions s JOIN users u ON u.id=s.user_id "
+                    "WHERE s.token=? AND s.created_at > ?", token_hash(token()), time.time() - SESSION_DAYS * 86400)
     return g.user
 
 
@@ -791,12 +862,30 @@ SECURITY_HEADERS = {
 }
 
 
+@app.before_request
+def same_site_only():
+    """Защита от запросов с чужого сайта. Проверяем только то, что браузер шлёт с cookie:
+    именно такой запрос злоумышленник может подделать со своей страницы. Клиенты с Bearer-токеном
+    cookie не посылают, подделать их нельзя, и заголовка Origin у них может не быть."""
+    if request.method in ("GET", "HEAD", "OPTIONS") or not request.cookies.get("token"):
+        return None
+    source = request.headers.get("Origin") or request.headers.get("Referer") or ""
+    host = urlparse(source).netloc.lower() if source else ""
+    if host == request.host.lower():
+        return None
+    app.logger.warning("Изменяющий запрос с чужого сайта: %r", source)
+    return ({"error": "origin"}, 403) if is_api() else (translate("Запрос пришёл с чужого сайта", lang()), 403)
+
+
 @app.after_request
 def secure(response):
     for name, value in SECURITY_HEADERS.items():
         response.headers.setdefault(name, value)
     if request.is_secure:  # на сервере с HTTPS просим браузер больше не ходить по http
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    # SEC-07: работы, отчёты и материалы это персональные данные, их не кешируют ни браузер, ни прокси
+    if not request.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-store")
     return response
 
 
@@ -829,6 +918,9 @@ def view(rule, template=None, method="GET"):
             me = current_user()
             if not me:
                 return ({"error": "auth"}, 401) if is_api() else redirect("/login")
+            if me["readonly"] and method != "GET":  # демонстрационный вход только смотрит
+                message = translate("Это демонстрация: менять здесь ничего нельзя", lang())
+                return ({"error": message}, 403) if is_api() else (message, 403)
             res = f(me, **kw)
             if isinstance(res, dict) and not is_api() and template:
                 return render_template(template, me=me, **res)
@@ -841,7 +933,8 @@ def view(rule, template=None, method="GET"):
 
 def start_session(u):
     t = secrets.token_urlsafe(24)
-    run("INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)", t, u["id"], time.time())
+    run("DELETE FROM sessions WHERE created_at < ?", time.time() - SESSION_DAYS * 86400)  # просроченные не копим
+    run("INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)", token_hash(t), u["id"], time.time())
     if is_api():
         return {"token": t}
     r = redirect("/papers")
@@ -861,15 +954,16 @@ def login():
         return render_template("login.html")
     d = body()
     name = (d.get("login") or "").strip().lower()
-    key = (name, request.remote_addr)  # попытки с чужого адреса не запирают учителя
-    tries, until = attempts.get(key, (0, 0.0))
-    if tries >= LOGIN_TRIES and time.time() < until:
-        return fail("Слишком много попыток входа. Попробуйте через четверть часа", "login.html")
+    # два ключа: по логину и по адресу. Так и чужой подбор не запирает учителя, и веер логинов упирается в лимит
+    for key, limit in ((f"login:{name}:{request.remote_addr}", LOGIN_TRIES), (f"ip:{request.remote_addr}", LOGIN_TRIES * 4)):
+        if q1("SELECT COUNT(*) AS n FROM limits WHERE key=? AND at > ?", key, time.time() - LOGIN_PAUSE)["n"] >= limit:
+            return fail("Слишком много попыток входа. Попробуйте через четверть часа", "login.html")
     u = q1("SELECT * FROM users WHERE login=?", name)
     if not u or not check_password_hash(u["pw_hash"], d.get("password") or ""):
-        attempts[key] = (tries + 1, time.time() + LOGIN_PAUSE)
+        for key in (f"login:{name}:{request.remote_addr}", f"ip:{request.remote_addr}"):
+            run("INSERT INTO limits(key, at) VALUES(?,?)", key, time.time())
         return fail("Неверный логин или пароль", "login.html")
-    attempts.pop(key, None)
+    run("DELETE FROM limits WHERE key IN (?,?)", f"login:{name}:{request.remote_addr}", f"ip:{request.remote_addr}")
     return start_session(u)
 
 
@@ -880,31 +974,40 @@ def register():
         return render_template("register.html", need_code=bool(REGISTER_CODE))
     d = body()
     name, login_, pw = (d.get("name") or "").strip()[:100], (d.get("login") or "").strip().lower(), d.get("password") or ""
+    if not used(f"register:{request.remote_addr}", 3600, REGISTER_TRIES):
+        return fail("Слишком много регистраций с этого адреса. Попробуйте через час", "register.html")
     if REGISTER_CODE and (d.get("code") or "").strip() != REGISTER_CODE:
         return fail("Неверный код приглашения", "register.html")
     if not name:
         return fail("Укажите имя", "register.html")
     if not re.fullmatch(r"[a-z0-9_.-]{3,40}", login_):
         return fail("Логин: от 3 до 40 символов, латиница, цифры, точка, дефис", "register.html")
-    if len(pw) < 6:
-        return fail("Пароль не короче 6 символов", "register.html")
+    if len(pw) < 8:
+        return fail("Пароль не короче 8 символов", "register.html")
     try:
-        cur = run("INSERT INTO users(name,login,pw_hash,lang,created_at) VALUES(?,?,?,?,?)",
-                  name, login_, generate_password_hash(pw), lang(), time.time())
+        with db():  # пользователь, профиль и условия появляются вместе или не появляются вовсе
+            uid = db().execute("INSERT INTO users(name,login,pw_hash,lang,created_at) VALUES(?,?,?,?,?)",
+                               (name, login_, generate_password_hash(pw), lang(), time.time())).lastrowid
+            prid = db().execute("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(?,?,'{}',?)",
+                                (uid, translate("Исследовательская работа", lang()), time.time())).lastrowid
+            db().executemany("INSERT INTO requirements(teacher_id,position,text,rule,value,profile_id) "
+                             "VALUES(?,?,?,?,?,?)",
+                             [(uid, i, translate(text, lang()), rule, value, prid)  # учитель потом правит их сам
+                              for i, (text, rule, value) in enumerate(DEFAULT_REQUIREMENTS, 1)])
     except sqlite3.IntegrityError:
         return fail("Этот логин уже занят", "register.html")
-    uid = cur.lastrowid
-    db().executemany("INSERT INTO requirements(teacher_id,position,text,rule,value) VALUES(?,?,?,?,?)",
-                     [(uid, i, translate(text, lang()), rule, value)  # условия учитель потом правит сам, поэтому переводим сразу
-                      for i, (text, rule, value) in enumerate(DEFAULT_REQUIREMENTS, 1)])
-    db().commit()
     return start_session(q1("SELECT id, name, login, lang FROM users WHERE id=?", uid))
 
 
 @app.post("/logout")
 @app.post("/api/logout")
 def logout():
-    run("DELETE FROM sessions WHERE token=?", token() or "")
+    me = current_user()
+    everywhere = (body().get("all") if hasattr(body(), "get") else None)
+    if everywhere and me:
+        run("DELETE FROM sessions WHERE user_id=?", me["id"])  # выход на всех устройствах
+    else:
+        run("DELETE FROM sessions WHERE token=?", token_hash(token()))
     if is_api():
         return {"ok": True}
     r = redirect("/login")
@@ -914,9 +1017,16 @@ def logout():
 
 # ---------- проверки ----------
 
+def papers_page(me, profile_id=None, papers=None):
+    """Данные страницы проверок: список работ, профиль и его настройки."""
+    chosen = profile_of(me["id"], profile_id if profile_id is not None else as_int(request.args, "profile"))
+    return {"papers": papers if papers is not None else [], "backend": backend(), "rules": RULES,
+            "profiles": profiles_of(me["id"]), "profile": chosen, "settings": rules_of(chosen),
+            "defaults": FORMAT_DEFAULTS, "requirements": requirements_of(me["id"], chosen and chosen["id"])}
+
+
 @view("/papers", "papers.html")
 def papers_home(me):
-    chosen = profile_of(me["id"], request.args.get("profile", type=int))
     papers = q("""SELECT id, student, title, filename, chars, ai_status, ai_note, uploaded_at,
           (SELECT COUNT(*) FROM findings f WHERE f.paper_id=p.id AND f.status='fail') AS failed,
           (SELECT COUNT(*) FROM findings f WHERE f.paper_id=p.id AND f.kind='photo' AND f.status='ai') AS ai_photos,
@@ -927,9 +1037,7 @@ def papers_home(me):
     for row in papers:
         marks = [m for m in (row.pop("marks") or "").split(",") if m]
         row["score"] = rubric.total(marks) if marks else None
-    return {"papers": papers, "requirements": requirements_of(me["id"], chosen and chosen["id"]),
-            "rules": RULES, "backend": backend(), "profiles": profiles_of(me["id"]),
-            "profile": chosen, "settings": rules_of(chosen), "defaults": FORMAT_DEFAULTS}
+    return papers_page(me, papers=papers)
 
 
 @view("/papers", method="POST")
@@ -937,10 +1045,8 @@ def upload_paper(me):
     f = request.files.get("file")
     data = f.read() if f else b""
     name = (f.filename or "").lower() if f else ""
-    profile = profile_of(me["id"], body().get("profile", type=int) if hasattr(body(), "get") else None)
-    spare = dict(papers=[], backend=backend(), rules=RULES, profiles=profiles_of(me["id"]), profile=profile,
-                 settings=rules_of(profile), defaults=FORMAT_DEFAULTS,
-                 requirements=requirements_of(me["id"], profile and profile["id"]))
+    profile = profile_of(me["id"], as_int(body(), "profile"))
+    spare = papers_page(me, profile and profile["id"])
     if not data or not name.endswith((".docx", ".pdf")):
         return fail("Нужен файл .docx или .pdf", "papers.html", **spare)
     try:
@@ -953,7 +1059,7 @@ def upload_paper(me):
         VALUES(?,?,?,?,?,?,?,?,?,?)""", me["id"], (body().get("student") or "").strip()[:100], paper_title(doc),
         (f.filename or "")[:200], text, data, len(text), lang(), profile and profile["id"], time.time()).lastrowid
     check_paper(pid, doc, me["id"], lang(), data, name, profile)
-    start_ai(pid)
+    start_ai(pid, me["id"], rules_of(profile))
     return done(f"/papers/{pid}", id=pid)
 
 
@@ -964,30 +1070,18 @@ def read_file(data, name):
 
 def own_paper(me, pid, with_file=False):
     """Сам файл достаём только для повторной проверки: в JSON страницы он не нужен."""
-    columns = "*" if with_file else ("id, teacher_id, student, title, filename, text, chars, ai_status, "
-                                     "ai_note, verdict, verdict_note, lang, profile_id, uploaded_at")
+    columns = "*" if with_file else ("id, teacher_id, student, title, filename, text, chars, ai_status, ai_note, "
+                                     "verdict, verdict_note, lang, profile_id, rules_hash, uploaded_at")
     return q1(f"SELECT {columns} FROM papers WHERE id=? AND teacher_id=?", pid, me["id"]) or abort(404)
 
 
 @view("/papers/<int:pid>", "report.html")
 def report(me, pid):
-    p = own_paper(me, pid, with_file=True)
-    r = rules_of(profile_of(me["id"], p["profile_id"]))
-    if p["data"]:  # оформление и след работы над файлом пересчитываем: язык должен совпадать с выбранным
-        doc = read_file(p["data"], p["filename"].lower())
-        store_findings(pid, "format", format_checks(doc, lang(), r) if r["do_format"] else [])
-        code_signs = file_signs(doc, p["data"], p["filename"].lower(), lang()) if r["do_authorship"] else []
-        ai_signs = [dict(r, ref=None) for r in q("SELECT label, status, note FROM findings "
-                                                 "WHERE paper_id=? AND kind='sign' AND position>=100 ORDER BY position", pid)]
-        store_findings(pid, "sign", code_signs)
-        db().executemany("INSERT INTO findings(paper_id,kind,position,label,status,note) VALUES(?,'sign',?,?,?,?)",
-                         [(pid, 100 + i, r["label"], r["status"], r["note"]) for i, r in enumerate(ai_signs, 1)])
-        db().commit()
-    p.pop("data")
+    p = own_paper(me, pid)  # открытие отчёта ничего не считает и не пишет: показываем сохранённое
+    used = profile_of(me["id"], p["profile_id"])
     marks = findings_of(pid, "rubric")
     praise = findings_of(pid, "praise")
-    used = profile_of(me["id"], p["profile_id"])
-    return {"p": p, "format": findings_of(pid, "format"), "reqs": findings_of(pid, "req"),
+    return {"p": p, "stale": p["rules_hash"] != rules_hash(rules_of(used)), "format": findings_of(pid, "format"), "reqs": findings_of(pid, "req"),
             "sources": findings_of(pid, "source"), "claims": findings_of(pid, "claim"),
             "rubric": marks, "praise": praise, "sense": findings_of(pid, "sense"), "lang_notes": findings_of(pid, "lang"),
             "checks": rules_of(used),
@@ -997,6 +1091,27 @@ def report(me, pid):
             "max_score": rubric.MAX_SCORE, "backend": backend()}
 
 
+@view("/papers/<int:pid>/sent", "sent.html")
+def paper_sent(me, pid):
+    """Что именно уйдёт в модель: текст работы и списки, без имени ученика."""
+    p = own_paper(me, pid)
+    r = rules_of(profile_of(me["id"], p["profile_id"]))
+    wanted = q("SELECT id, text FROM requirements WHERE teacher_id=? AND rule='ai' AND (profile_id IS ? OR profile_id=?) "
+               "ORDER BY position", me["id"], p["profile_id"], p["profile_id"])
+    sources = q("SELECT position, label FROM findings WHERE paper_id=? AND kind='source' ORDER BY position", pid)
+    content = ai_content(p, "\n".join(f"{x['id']}. {x['text']}" for x in wanted) or "условий нет",
+                         "\n".join(f"{x['position']}. {x['label']}" for x in sources) or "список источников не найден", r)
+    prompt, _schema = ai_request(r)
+    return {"p": p, "content": content, "prompt": prompt, "will_send": wants_ai(r)}
+
+
+@view("/papers/<int:pid>/status")
+def paper_status(me, pid):
+    """Лёгкий ответ для ожидания проверки: страница спрашивает только состояние."""
+    p = own_paper(me, pid)
+    return {"status": p["ai_status"] or "", "note": p["ai_note"] or ""}
+
+
 @view("/papers/<int:pid>/recheck", method="POST")
 def recheck(me, pid):
     p = own_paper(me, pid, with_file=True)
@@ -1004,7 +1119,7 @@ def recheck(me, pid):
     if p["data"]:
         check_paper(pid, read_file(p["data"], p["filename"].lower()), me["id"], lang(),
                     p["data"], p["filename"].lower(), profile_of(me["id"], p["profile_id"]))
-    start_ai(pid)
+    start_ai(pid, me["id"], rules_of(profile_of(me["id"], p["profile_id"])))
     return done(f"/papers/{pid}")
 
 
@@ -1059,10 +1174,16 @@ def save_checks(me, prid):
 def delete_profile(me, prid):
     q1("SELECT id FROM profiles WHERE id=? AND teacher_id=?", prid, me["id"]) or abort(404)
     if len(profiles_of(me["id"])) < 2:
-        abort(400)  # последний профиль не удаляем: условиям и работам нужно куда-то ссылаться
-    run("DELETE FROM findings WHERE kind='req' AND ref IN (SELECT id FROM requirements WHERE profile_id=?)", prid)
-    run("DELETE FROM requirements WHERE profile_id=?", prid)
-    run("DELETE FROM profiles WHERE id=?", prid)
+        return fail("Последний профиль удалить нельзя", "papers.html", **papers_page(me, prid))
+    used_by = q1("SELECT COUNT(*) AS n FROM papers WHERE profile_id=?", prid)["n"]
+    if used_by:  # иначе удаление упадёт на середине и оставит работу без условий
+        return fail("По этому профилю уже проверены работы, поэтому удалить его нельзя",
+                    "papers.html", **papers_page(me, prid))
+    with db():  # одной транзакцией: либо ушло всё, либо ничего
+        db().execute("DELETE FROM findings WHERE kind='req' AND ref IN "
+                     "(SELECT id FROM requirements WHERE profile_id=?)", (prid,))
+        db().execute("DELETE FROM requirements WHERE profile_id=?", (prid,))
+        db().execute("DELETE FROM profiles WHERE id=?", (prid,))
     return done("/papers#profile")
 
 
@@ -1083,14 +1204,11 @@ def add_material(me):
     if not topic:
         return fail("Напишите тему", "materials.html", materials=[], backend=backend(),
                     kinds=[(k, v["name"]) for k, v in MATERIALS.items()])
-    try:
-        count = min(30, max(3, int(d.get("count") or 8)))
-    except ValueError:
-        count = 8
+    count = min(30, max(3, as_int(d, "count", 8) or 8))
     mid = run("""INSERT INTO materials(teacher_id,kind,topic,grade,extra,count,lang,created_at)
         VALUES(?,?,?,?,?,?,?,?)""", me["id"], kind, topic, (d.get("grade") or "").strip()[:100],
         (d.get("extra") or "").strip()[:500], count, lang(), time.time()).lastrowid
-    start_material(mid)
+    start_material(mid, me["id"])
     return done(f"/materials/{mid}", id=mid)
 
 
@@ -1175,7 +1293,7 @@ def material_file(me, mid):
 def repeat_material(me, mid):
     q1("SELECT id FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
     run("UPDATE materials SET lang=? WHERE id=?", lang(), mid)
-    start_material(mid)
+    start_material(mid, me["id"])
     return done(f"/materials/{mid}")
 
 
@@ -1192,7 +1310,7 @@ def add_requirement(me):
     text = (d.get("text") or "").strip()[:300]
     rule = d.get("rule") if d.get("rule") in RULES else "ai"
     value = (d.get("value") or "").strip()[:100]
-    profile = profile_of(me["id"], d.get("profile", type=int) if hasattr(d, "get") else None)
+    profile = profile_of(me["id"], as_int(d, "profile"))
     if not text or not profile:
         abort(400)
     position = q1("SELECT COALESCE(MAX(position), 0) + 1 AS n FROM requirements WHERE teacher_id=?", me["id"])["n"]

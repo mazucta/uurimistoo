@@ -9,7 +9,17 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
     healthCheckPath: /login
+    # Постоянного диска на free-плане нет, база живёт до перезапуска. Для настоящих работ:
+    # plan: starter, раскомментировать disk и DB, и данные переживут обновление.
+    # disk:
+    #   name: data
+    #   mountPath: /data
+    #   sizeGB: 1
     envVars:
+      # - key: DB
+      #   value: /data/data.db
+      - key: DEMO
+        value: "1"           # демонстрационная база и вход demo, только просмотр. Для рабочего окружения убрать
       - key: BEHIND_PROXY
         value: "1"
       - key: PYTHON_VERSION
