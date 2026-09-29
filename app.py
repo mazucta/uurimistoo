@@ -30,15 +30,19 @@ CREATE TABLE IF NOT EXISTS users(
   lang TEXT NOT NULL DEFAULT 'ru', created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions(
   token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS profiles(
+  id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id),
+  name TEXT NOT NULL, rules TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS requirements(
   id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id), position INTEGER NOT NULL,
-  text TEXT NOT NULL, rule TEXT NOT NULL DEFAULT 'ai', value TEXT NOT NULL DEFAULT '');
+  text TEXT NOT NULL, rule TEXT NOT NULL DEFAULT 'ai', value TEXT NOT NULL DEFAULT '',
+  profile_id INTEGER REFERENCES profiles(id));
 CREATE TABLE IF NOT EXISTS papers(
   id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id),
   student TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '',
   text TEXT NOT NULL DEFAULT '', data BLOB, chars INTEGER NOT NULL DEFAULT 0,
   ai_status TEXT, ai_note TEXT, verdict TEXT, verdict_note TEXT, lang TEXT NOT NULL DEFAULT 'uk',
-  uploaded_at REAL NOT NULL);
+  profile_id INTEGER REFERENCES profiles(id), uploaded_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS findings(
   id INTEGER PRIMARY KEY, paper_id INTEGER NOT NULL REFERENCES papers(id),
   kind TEXT NOT NULL CHECK(kind IN ('format','req','source','claim','rubric','photo','sign','praise')),
@@ -47,7 +51,9 @@ CREATE TABLE IF NOT EXISTS findings(
 CREATE INDEX IF NOT EXISTS findings_paper ON findings(paper_id, kind, position);
 """
 # Показ без ключа API: если базы ещё нет, берём демонстрационную с готовым отчётом.
-if not os.path.exists(DB) and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db")):
+# DEMO=0 отключает это, так делает seed.py, когда заводит чистую базу.
+if (os.environ.get("DEMO", "1") != "0" and not os.path.exists(DB)
+        and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db"))):
     import shutil
     shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db"), DB)
 
@@ -66,7 +72,24 @@ with sqlite3.connect(DB) as _c:
             _c.execute(f"ALTER TABLE papers ADD COLUMN {_col} TEXT")
     if "lang" not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
         _c.execute("ALTER TABLE papers ADD COLUMN lang TEXT NOT NULL DEFAULT 'uk'")
+    for _table in ("papers", "requirements"):  # профили проверки появились 2026-09-29
+        if "profile_id" not in {r[1] for r in _c.execute(f"PRAGMA table_info({_table})")}:
+            _c.execute(f"ALTER TABLE {_table} ADD COLUMN profile_id INTEGER REFERENCES profiles(id)")
+    for _row in _c.execute("SELECT id FROM users WHERE id NOT IN (SELECT teacher_id FROM profiles)").fetchall():
+        _new = _c.execute("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(?,?,'{}',?)",
+                          (_row[0], "Исследовательская работа", time.time())).lastrowid
+        _c.execute("UPDATE requirements SET profile_id=? WHERE teacher_id=? AND profile_id IS NULL", (_new, _row[0]))
+        _c.execute("UPDATE papers SET profile_id=? WHERE teacher_id=? AND profile_id IS NULL", (_new, _row[0]))
     _c.execute("UPDATE papers SET ai_status='error', ai_note='' WHERE ai_status='pending'")
+
+# Оформление: что именно требует школа. Профиль проверки может поменять любое число.
+FORMAT_DEFAULTS = {
+    "left": 3.0, "right": 2.0, "top": 2.0, "bottom": 2.0,
+    "font": "Times New Roman", "size": 12.0, "line": 1.5, "before": 6.0, "after": 6.0,
+    "indent": 0.0,          # абзацный отступ в сантиметрах, ноль значит его быть не должно
+    "h1": 16.0, "h2": 14.0, "h3": 12.0, "cover": 14.0, "cover_title": 20.0,
+    "justify": 1, "page_numbers": 1, "sources": 1,
+}
 
 # Условия, которые проверяются кодом точно. Остальные формулировки достаются ИИ.
 RULES = ("chars_min", "sources_min", "citations_min", "section", "ai")
@@ -150,7 +173,28 @@ def run(sql, *args):
 
 # ---------- условия учителя ----------
 
-def requirements_of(teacher_id):
+def profiles_of(teacher_id):
+    return q("SELECT id, name, rules FROM profiles WHERE teacher_id=? ORDER BY id", teacher_id)
+
+
+def profile_of(teacher_id, pid=None):
+    """Выбранный профиль проверки, а если такого нет, то первый."""
+    found = pid and q1("SELECT id, name, rules FROM profiles WHERE id=? AND teacher_id=?", pid, teacher_id)
+    return found or (profiles_of(teacher_id) or [None])[0]
+
+
+def rules_of(profile):
+    """Числа оформления профиля поверх школьных значений по умолчанию."""
+    try:
+        return {**FORMAT_DEFAULTS, **json.loads((profile or {}).get("rules") or "{}")}
+    except ValueError:
+        return dict(FORMAT_DEFAULTS)
+
+
+def requirements_of(teacher_id, profile_id=None):
+    if profile_id:
+        return q("SELECT id, position, text, rule, value FROM requirements WHERE teacher_id=? AND profile_id=? "
+                 "ORDER BY position", teacher_id, profile_id)
     return q("SELECT id, position, text, rule, value FROM requirements WHERE teacher_id=? ORDER BY position", teacher_id)
 
 
@@ -188,73 +232,88 @@ def sample(paragraphs, wrong, lang_):
     return "fail", f"{len(wrong)} {translate('из', lang_)} {len(paragraphs)}: «{first}…»{more}"
 
 
-def format_checks(doc, lang_):
-    """Правила оформления работы. Каждое либо выполнено, либо нет, и видно, где именно."""
+def format_checks(doc, lang_, rules=None):
+    """Правила оформления. Числа берутся из профиля проверки, поэтому у каждой школы свои."""
     t = lambda text: translate(text, lang_)
+    r = {**FORMAT_DEFAULTS, **(rules or {})}
+    n = lambda value: f"{float(value):g}".replace(".", ",")
     body = [p for p in doc.body() if p["text"] and not p["level"] and not p.get("block")]
     heads = doc.headings()
     out = []
 
-    def add(key, ok, note=""):
+    def add(key, ok, want="", found=""):
+        note = " · ".join(x for x in (want, found) if x)
         if key in doc.unknown:  # например отбивку абзаца по PDF не измерить
-            out.append({"label": t(key), "status": "unclear", "note": t("по этому файлу не проверить")})
+            out.append({"label": t(key), "status": "unclear", "note": f"{want} · {t('по этому файлу не проверить')}"})
         else:
             out.append({"label": t(key), "status": "pass" if ok else "fail", "note": note})
 
-    m = doc.margins
-    want = {"left": (3.0, "левое"), "right": (2.0, "правое"), "top": (2.0, "верхнее"), "bottom": (2.0, "нижнее")}
-    bad = [(name, m[k]) for k, (cm, name) in want.items() if k in m and not near(m[k], cm, 0.15)]
-    skipped = [t(name) for k, (_cm, name) in want.items() if k not in m]  # в PDF правый край не измерить
-    add("Поля: левое 3 см, правое, верхнее и нижнее 2 см", not bad,
-        ", ".join([f"{t(name)} {value} {t('см')}" for name, value in bad]
-                  + ([f"{', '.join(skipped)}: {t('по этому файлу не проверить')}"] if skipped else [])))
+    sides = [("left", "левое"), ("right", "правое"), ("top", "верхнее"), ("bottom", "нижнее")]
+    want = f"{t('надо')} {' / '.join(n(r[k]) for k, _ in sides)} {t('см')}"
+    bad = [(name, doc.margins[k]) for k, name in sides if k in doc.margins and not near(doc.margins[k], r[k], 0.15)]
+    missing = [t(name) for k, name in sides if k not in doc.margins]  # в PDF правый край не измерить
+    add("Поля страницы", not bad, want,
+        ", ".join([f"{t(name)} {n(value)}" for name, value in bad]
+                  + ([f"{', '.join(missing)}: {t('по этому файлу не проверить')}"] if missing else [])))
 
-    for label, ok_if in [
+    font_key = re.sub(r"[^a-z]", "", str(r["font"]).lower())
+    for key, want, ok_if in [
         # в PDF шрифт зовётся TimesNewRomanPSMT, в Word «Times New Roman»: сравниваем без пробелов
-        ("Шрифт Times New Roman", lambda p: re.sub(r"[^a-z]", "", (p.get("font") or "").lower()).startswith("timesnewroman")),
-        ("Кегль 12", lambda p: near(p.get("size"), 12, 0.5)),
-        ("Междустрочный интервал 1,5", lambda p: near(p.get("line"), 360, 15) and p.get("line_rule") != "exact"),
+        ("Шрифт", r["font"], lambda p: re.sub(r"[^a-z]", "", (p.get("font") or "").lower()).startswith(font_key)),
+        ("Кегль", f"{n(r['size'])} {t('пт')}", lambda p: near(p.get("size"), float(r["size"]), 0.5)),
+        ("Междустрочный интервал", n(r["line"]),
+         lambda p: near(p.get("line"), float(r["line"]) * 240, 15) and p.get("line_rule") != "exact"),
         # таблицы, подписи к ним и короткие надписи стоят не по ширине, и это правильно
-        ("Выравнивание по ширине", lambda p: p.get("jc") == "both" or len(p["text"]) < 100
+        ("Выравнивание по ширине", "", lambda p: p.get("jc") == "both" or len(p["text"]) < 100
          or p["in_table"] or p["text"].lower().startswith(docx_read.CAPTION)),
-        ("Отбивка абзаца 6 пт до и после", lambda p: near(p.get("before"), 120, 1) and near(p.get("after"), 120, 1)),
-        ("Абзацного отступа нет", lambda p: not p.get("first_line")),
+        ("Отбивка абзаца", f"{n(r['before'])} / {n(r['after'])} {t('пт')}",
+         lambda p: near(p.get("before"), float(r["before"]) * 20, 1) and near(p.get("after"), float(r["after"]) * 20, 1)),
+        ("Абзацный отступ", n(r["indent"]) + " " + t("см") if float(r["indent"]) else t("не допускается"),
+         lambda p: near(p.get("first_line") or 0, float(r["indent"]) * 567, 60)),
     ]:
-        if not body:  # работа без разделов: проверять правила абзаца не на чем
-            out.append({"label": t(label), "status": "unclear", "note": t("основной текст не найден")})
+        if key == "Выравнивание по ширине" and not r.get("justify"):
             continue
-        status, note = sample(body, [p for p in body if not ok_if(p)], lang_)
-        add(label, status == "pass", note)
+        if not body:  # работа без разделов: проверять правила абзаца не на чем
+            out.append({"label": t(key), "status": "unclear", "note": t("основной текст не найден")})
+            continue
+        wrong = [p for p in body if not ok_if(p)]
+        status, found = sample(body, wrong, lang_)
+        add(key, status == "pass", t("надо") + " " + str(want) if want else "", found)
 
-    for level, size, label in [(1, 16, "Заголовок раздела: 16 пт, полужирный, с новой страницы"),
-                               (2, 14, "Заголовок подраздела: 14 пт, полужирный"),
-                               (3, 12, "Заголовок пункта: 12 пт, полужирный")]:
+    for level, key in ((1, "Заголовок раздела"), (2, "Заголовок подраздела"), (3, "Заголовок пункта")):
+        size = float(r.get(f"h{level}") or 0)
+        if not size:  # в профиле такого уровня заголовков нет
+            continue
+        want = f"{t('надо')} {n(size)} {t('пт')}, {t('полужирный')}" + (f", {t('с новой страницы')}" if level == 1 else "")
         same = [h for h in heads if h["level"] == level]
         wrong = [h for h in same if not (near(h.get("size"), size, 0.5) and h.get("bold")
                                          and (level > 1 or h.get("page_break")))]
         if not same:  # работа без заголовков третьего уровня это не нарушение, но учителю видно
-            out.append({"label": t(label), "status": "unclear", "note": t("таких заголовков нет")})
+            out.append({"label": t(key), "status": "unclear", "note": f"{want} · {t('таких заголовков нет')}"})
         else:
-            status, note = sample(same, wrong, lang_)
-            add(label, status == "pass", note)
+            status, found = sample(same, wrong, lang_)
+            add(key, status == "pass", want, found)
 
-    add("Заголовки выровнены по левому полю", all(h.get("jc") in (None, "left", "start") for h in heads),
+    add("Заголовки по левому полю", all(h.get("jc") in (None, "left", "start") for h in heads), "",
         ", ".join(h["text"][:40] for h in heads if h.get("jc") not in (None, "left", "start"))[:120])
 
-    jc = doc.page_numbering()
-    add("Номер страницы внизу по центру", jc == "center",
-        t("нумерации страниц нет") if jc is None else f"{t('выравнивание')}: {jc}")
+    if r.get("page_numbers"):
+        jc = doc.page_numbering()
+        add("Номер страницы", jc == "center", t("надо") + " " + t("внизу по центру"),
+            t("нумерации страниц нет") if jc is None else f"{t('выравнивание')}: {jc}")
 
     cover = [p for p in doc.cover() if p["text"]]
     sizes = [p.get("size") for p in cover if p.get("size")]
-    add("Титульный лист: 14 пт, название работы 20 пт",
-        bool(cover) and near(max(sizes, default=0), 20, 0.5)
-        and all(near(s, 14, 0.5) or near(s, 20, 0.5) for s in sizes),
+    ok_size = lambda value: near(value, float(r["cover"]), 0.5) or near(value, float(r["cover_title"]), 0.5)
+    add("Титульный лист", bool(cover) and near(max(sizes, default=0), float(r["cover_title"]), 0.5)
+        and all(ok_size(value) for value in sizes),
+        f"{t('надо')} {n(r['cover'])} {t('пт')}, {t('название работы')} {n(r['cover_title'])} {t('пт')}",
         t("титульного листа нет") if not cover else
-        ", ".join(sorted({f"{s:g} {t('пт')}" for s in sizes if not (near(s, 14, 0.5) or near(s, 20, 0.5))})))
+        ", ".join(sorted({f"{value:g} {t('пт')}" for value in sizes if not ok_size(value)})))
 
-    add("Список использованных источников оформлен отдельным разделом", bool(doc.sources()),
-        "" if doc.sources() else t("раздел со списком источников не найден"))
+    if r.get("sources"):
+        add("Список использованных источников", bool(doc.sources()), t("отдельным разделом"),
+            "" if doc.sources() else t("раздел со списком источников не найден"))
     return out
 
 
@@ -301,9 +360,9 @@ def file_signs(doc, data, filename, lang_):
     return out
 
 
-def check_paper(pid, doc, teacher_id, lang_, data=b"", filename=""):
-    store_findings(pid, "format", format_checks(doc, lang_))
-    store_findings(pid, "req", check_requirements(doc, requirements_of(teacher_id)))
+def check_paper(pid, doc, teacher_id, lang_, data=b"", filename="", profile=None):
+    store_findings(pid, "format", format_checks(doc, lang_, rules_of(profile)))
+    store_findings(pid, "req", check_requirements(doc, requirements_of(teacher_id, (profile or {}).get("id"))))
     store_findings(pid, "source", [{"ref": i, "label": s, "status": "unclear", "note": ""}
                                    for i, s in enumerate(doc.sources(), 1)])
     store_findings(pid, "photo", [{"label": p["name"], "status": p["status"], "note": p["note"]}
@@ -418,10 +477,11 @@ def run_ai(pid):
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
     try:
-        p = con.execute("""SELECT p.id, p.title, p.text, p.lang, u.id AS teacher_id FROM papers p
+        p = con.execute("""SELECT p.id, p.title, p.text, p.lang, p.profile_id, u.id AS teacher_id FROM papers p
             JOIN users u ON u.id=p.teacher_id WHERE p.id=?""", (pid,)).fetchone()
-        wanted = con.execute("SELECT id, text FROM requirements WHERE teacher_id=? AND rule='ai' ORDER BY position",
-                             (p["teacher_id"],)).fetchall()
+        wanted = con.execute("SELECT id, text FROM requirements WHERE teacher_id=? AND rule='ai' "
+                             "AND (profile_id IS ? OR profile_id=?) ORDER BY position",
+                             (p["teacher_id"], p["profile_id"], p["profile_id"])).fetchall()
         conditions = "\n".join(f"{r['id']}. {r['text']}" for r in wanted) or "условий нет"
         sources = con.execute("SELECT id, position, label FROM findings WHERE paper_id=? AND kind='source' ORDER BY position",
                               (pid,)).fetchall()
@@ -672,6 +732,7 @@ def logout():
 
 @view("/papers", "papers.html")
 def papers_home(me):
+    chosen = profile_of(me["id"], request.args.get("profile", type=int))
     papers = q("""SELECT id, student, title, filename, chars, ai_status, ai_note, uploaded_at,
           (SELECT COUNT(*) FROM findings f WHERE f.paper_id=p.id AND f.status='fail') AS failed,
           (SELECT COUNT(*) FROM findings f WHERE f.paper_id=p.id AND f.kind='photo' AND f.status='ai') AS ai_photos,
@@ -682,7 +743,9 @@ def papers_home(me):
     for row in papers:
         marks = [m for m in (row.pop("marks") or "").split(",") if m]
         row["score"] = rubric.total(marks) if marks else None
-    return {"papers": papers, "requirements": requirements_of(me["id"]), "rules": RULES, "backend": backend()}
+    return {"papers": papers, "requirements": requirements_of(me["id"], chosen and chosen["id"]),
+            "rules": RULES, "backend": backend(), "profiles": profiles_of(me["id"]),
+            "profile": chosen, "settings": rules_of(chosen), "defaults": FORMAT_DEFAULTS}
 
 
 @view("/papers", method="POST")
@@ -690,20 +753,22 @@ def upload_paper(me):
     f = request.files.get("file")
     data = f.read() if f else b""
     name = (f.filename or "").lower() if f else ""
+    profile = profile_of(me["id"], body().get("profile", type=int) if hasattr(body(), "get") else None)
+    spare = dict(papers=[], backend=backend(), rules=RULES, profiles=profiles_of(me["id"]), profile=profile,
+                 settings=rules_of(profile), defaults=FORMAT_DEFAULTS,
+                 requirements=requirements_of(me["id"], profile and profile["id"]))
     if not data or not name.endswith((".docx", ".pdf")):
-        return fail("Нужен файл .docx или .pdf", "papers.html", papers=[], backend=backend(),
-                    requirements=requirements_of(me["id"]), rules=RULES)
+        return fail("Нужен файл .docx или .pdf", "papers.html", **spare)
     try:
         doc = read_file(data, name)
     except Exception as ex:
         app.logger.warning("Файл не читается: %s", ex)
-        return fail("Файл не читается", "papers.html", papers=[], backend=backend(),
-                    requirements=requirements_of(me["id"]), rules=RULES)
+        return fail("Файл не читается", "papers.html", **spare)
     text = doc.text()
-    pid = run("""INSERT INTO papers(teacher_id,student,title,filename,text,data,chars,lang,uploaded_at)
-        VALUES(?,?,?,?,?,?,?,?,?)""", me["id"], (body().get("student") or "").strip()[:100], paper_title(doc),
-        (f.filename or "")[:200], text, data, len(text), lang(), time.time()).lastrowid
-    check_paper(pid, doc, me["id"], lang(), data, name)
+    pid = run("""INSERT INTO papers(teacher_id,student,title,filename,text,data,chars,lang,profile_id,uploaded_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?)""", me["id"], (body().get("student") or "").strip()[:100], paper_title(doc),
+        (f.filename or "")[:200], text, data, len(text), lang(), profile and profile["id"], time.time()).lastrowid
+    check_paper(pid, doc, me["id"], lang(), data, name, profile)
     start_ai(pid)
     return done(f"/papers/{pid}", id=pid)
 
@@ -715,8 +780,8 @@ def read_file(data, name):
 
 def own_paper(me, pid, with_file=False):
     """Сам файл достаём только для повторной проверки: в JSON страницы он не нужен."""
-    columns = "*" if with_file else ("id, teacher_id, student, title, filename, text, chars, "
-                                     "ai_status, ai_note, verdict, verdict_note, uploaded_at")
+    columns = "*" if with_file else ("id, teacher_id, student, title, filename, text, chars, ai_status, "
+                                     "ai_note, verdict, verdict_note, lang, profile_id, uploaded_at")
     return q1(f"SELECT {columns} FROM papers WHERE id=? AND teacher_id=?", pid, me["id"]) or abort(404)
 
 
@@ -725,7 +790,7 @@ def report(me, pid):
     p = own_paper(me, pid, with_file=True)
     if p["data"]:  # оформление и след работы над файлом пересчитываем: язык должен совпадать с выбранным
         doc = read_file(p["data"], p["filename"].lower())
-        store_findings(pid, "format", format_checks(doc, lang()))
+        store_findings(pid, "format", format_checks(doc, lang(), rules_of(profile_of(me["id"], p["profile_id"]))))
         code_signs = file_signs(doc, p["data"], p["filename"].lower(), lang())
         ai_signs = [dict(r, ref=None) for r in q("SELECT label, status, note FROM findings "
                                                  "WHERE paper_id=? AND kind='sign' AND position>=100 ORDER BY position", pid)]
@@ -736,10 +801,12 @@ def report(me, pid):
     p.pop("data")
     marks = findings_of(pid, "rubric")
     praise = findings_of(pid, "praise")
+    used = profile_of(me["id"], p["profile_id"])
     return {"p": p, "format": findings_of(pid, "format"), "reqs": findings_of(pid, "req"),
             "sources": findings_of(pid, "source"), "claims": findings_of(pid, "claim"),
             "rubric": marks, "praise": praise,
             "photos": findings_of(pid, "photo"), "signs": findings_of(pid, "sign"),
+            "profile": used["name"] if used else "",
             "score": rubric.total([m["status"] for m in marks if m["status"]]) if marks else None,
             "max_score": rubric.MAX_SCORE, "backend": backend()}
 
@@ -750,7 +817,7 @@ def recheck(me, pid):
     run("UPDATE papers SET lang=? WHERE id=?", lang(), pid)  # проверка пойдёт на языке, выбранном сейчас
     if p["data"]:
         check_paper(pid, read_file(p["data"], p["filename"].lower()), me["id"], lang(),
-                    p["data"], p["filename"].lower())
+                    p["data"], p["filename"].lower(), profile_of(me["id"], p["profile_id"]))
     start_ai(pid)
     return done(f"/papers/{pid}")
 
@@ -763,18 +830,59 @@ def delete_paper(me, pid):
     return done("/papers")
 
 
+@view("/profiles", method="POST")
+def add_profile(me):
+    name = (body().get("name") or "").strip()[:100]
+    if not name:
+        abort(400)
+    pid = run("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(?,?,'{}',?)",
+              me["id"], name, time.time()).lastrowid
+    return done(f"/papers?profile={pid}#profile", id=pid)
+
+
+@view("/profiles/<int:prid>/rules", method="POST")
+def save_rules(me, prid):
+    q1("SELECT id FROM profiles WHERE id=? AND teacher_id=?", prid, me["id"]) or abort(404)
+    d, rules = body(), {}
+    for key, default in FORMAT_DEFAULTS.items():
+        raw = (str(d.get(key, "")) or "").strip().replace(",", ".")
+        if isinstance(default, str):
+            rules[key] = raw[:60] or default
+        elif key in ("justify", "page_numbers", "sources"):
+            rules[key] = 1 if raw in ("1", "on", "true") else 0
+        else:
+            try:
+                rules[key] = max(0.0, min(100.0, float(raw)))
+            except ValueError:
+                rules[key] = default
+    run("UPDATE profiles SET rules=? WHERE id=?", json.dumps(rules, ensure_ascii=False), prid)
+    return done(f"/papers?profile={prid}#profile")
+
+
+@view("/profiles/<int:prid>/delete", method="POST")
+def delete_profile(me, prid):
+    q1("SELECT id FROM profiles WHERE id=? AND teacher_id=?", prid, me["id"]) or abort(404)
+    if len(profiles_of(me["id"])) < 2:
+        abort(400)  # последний профиль не удаляем: условиям и работам нужно куда-то ссылаться
+    run("DELETE FROM findings WHERE kind='req' AND ref IN (SELECT id FROM requirements WHERE profile_id=?)", prid)
+    run("DELETE FROM requirements WHERE profile_id=?", prid)
+    run("DELETE FROM profiles WHERE id=?", prid)
+    return done("/papers#profile")
+
+
 @view("/requirements", method="POST")
 def add_requirement(me):
     d = body()
     text = (d.get("text") or "").strip()[:300]
     rule = d.get("rule") if d.get("rule") in RULES else "ai"
     value = (d.get("value") or "").strip()[:100]
-    if not text:
+    profile = profile_of(me["id"], d.get("profile", type=int) if hasattr(d, "get") else None)
+    if not text or not profile:
         abort(400)
     position = q1("SELECT COALESCE(MAX(position), 0) + 1 AS n FROM requirements WHERE teacher_id=?", me["id"])["n"]
-    run("INSERT INTO requirements(teacher_id,position,text,rule,value) VALUES(?,?,?,?,?)",
-        me["id"], position, text, rule, value)
-    return done("/papers#requirements")
+    run("INSERT INTO requirements(teacher_id,position,text,rule,value,profile_id) VALUES(?,?,?,?,?,?)",
+        me["id"], position, text, rule, value, profile["id"])
+    return done(f"/papers?profile={profile['id']}#profile")
 
 
 @view("/requirements/<int:rid>/delete", method="POST")
@@ -782,7 +890,7 @@ def delete_requirement(me, rid):
     q1("SELECT id FROM requirements WHERE id=? AND teacher_id=?", rid, me["id"]) or abort(404)
     run("DELETE FROM findings WHERE kind='req' AND ref=?", rid)
     run("DELETE FROM requirements WHERE id=?", rid)
-    return done("/papers#requirements")
+    return done("/papers#profile")
 
 
 # ---------- шаблоны ----------

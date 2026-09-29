@@ -11,6 +11,9 @@
   <div class="card-head"><h2>{{ _('Новая проверка') }}</h2></div>
   <form class="upload" method="post" action="/papers" enctype="multipart/form-data">
     <input name="student" placeholder="{{ _('Чья работа, для себя') }}" value="{{ form.student if form }}">
+    <select name="profile" title="{{ _('Профиль проверки') }}">
+      {% for pr in profiles %}<option value="{{ pr.id }}" {{ 'selected' if profile and pr.id == profile.id }}>{{ _(pr.name) }}</option>{% endfor %}
+    </select>
     <input type="file" name="file" accept=".docx,.pdf" required>
     <button class="btn primary">{{ _('Проверить') }}</button>
   </form>
@@ -52,8 +55,58 @@
   </table></div>
 </section>
 
-<section class="card" id="requirements">
-  <div class="card-head"><h2>{{ _('Условия к работе') }}</h2><span class="muted small">{{ _('одни считает программа, остальные проверяет ИИ') }}</span></div>
+<section class="card" id="profile">
+  <div class="card-head"><h2>{{ _('Профиль проверки') }}</h2>
+    <span class="muted small">{{ _('свой набор условий и чисел оформления для каждого вида работ') }}</span></div>
+
+  <div class="profiles">
+    {% for pr in profiles %}
+    <a class="chip {{ 'on' if profile and pr.id == profile.id }}" href="/papers?profile={{ pr.id }}#profile">{{ _(pr.name) }}</a>
+    {% endfor %}
+    <form class="chip-form" method="post" action="/profiles">
+      <input name="name" placeholder="{{ _('Новый профиль') }}" required>
+      <button class="btn small">{{ _('Добавить') }}</button>
+    </form>
+    {% if profiles|length > 1 %}
+    <form method="post" action="/profiles/{{ profile.id }}/delete" onsubmit="return confirm('{{ _('Удалить профиль вместе с его условиями?') }}')">
+      <button class="btn-link danger small">{{ _('Удалить профиль') }}</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <h3 class="sub-head">{{ _('Оформление') }}</h3>
+  <form class="rules-form" method="post" action="/profiles/{{ profile.id }}/rules">
+    <label class="field"><span>{{ _('Поля: левое, правое, верхнее, нижнее, см') }}</span>
+      <span class="form-row">
+        {% for key in ['left', 'right', 'top', 'bottom'] %}
+        <input name="{{ key }}" value="{{ settings[key] }}" inputmode="decimal" size="4">{% endfor %}
+      </span></label>
+    <label class="field"><span>{{ _('Шрифт') }}</span><input name="font" value="{{ settings.font }}"></label>
+    <label class="field"><span>{{ _('Кегль основного текста') }}</span><input name="size" value="{{ settings.size }}" inputmode="decimal"></label>
+    <label class="field"><span>{{ _('Междустрочный интервал') }}</span><input name="line" value="{{ settings.line }}" inputmode="decimal"></label>
+    <label class="field"><span>{{ _('Отбивка абзаца до и после, пт') }}</span>
+      <span class="form-row"><input name="before" value="{{ settings.before }}" inputmode="decimal" size="4">
+        <input name="after" value="{{ settings.after }}" inputmode="decimal" size="4"></span></label>
+    <label class="field"><span>{{ _('Абзацный отступ, см, ноль если не допускается') }}</span>
+      <input name="indent" value="{{ settings.indent }}" inputmode="decimal"></label>
+    <label class="field"><span>{{ _('Кегли заголовков: раздел, подраздел, пункт') }}</span>
+      <span class="form-row">
+        {% for key in ['h1', 'h2', 'h3'] %}
+        <input name="{{ key }}" value="{{ settings[key] }}" inputmode="decimal" size="4">{% endfor %}
+      </span></label>
+    <label class="field"><span>{{ _('Титульный лист: кегль и название работы') }}</span>
+      <span class="form-row"><input name="cover" value="{{ settings.cover }}" inputmode="decimal" size="4">
+        <input name="cover_title" value="{{ settings.cover_title }}" inputmode="decimal" size="4"></span></label>
+    <div class="switches">
+      <label><input type="checkbox" name="justify" value="1" {{ 'checked' if settings.justify }}> {{ _('Текст по ширине') }}</label>
+      <label><input type="checkbox" name="page_numbers" value="1" {{ 'checked' if settings.page_numbers }}> {{ _('Нумерация страниц') }}</label>
+      <label><input type="checkbox" name="sources" value="1" {{ 'checked' if settings.sources }}> {{ _('Список источников отдельным разделом') }}</label>
+    </div>
+    <button class="btn">{{ _('Сохранить оформление') }}</button>
+    <span class="muted small">{{ _('Пустое поле вернёт школьное значение.') }}</span>
+  </form>
+
+  <h3 class="sub-head">{{ _('Условия к работе') }} <span class="muted small">{{ _('одни считает программа, остальные проверяет ИИ') }}</span></h3>
   <ul class="rules">
     {% for r in requirements %}
     <li>
@@ -65,6 +118,7 @@
     {% else %}<li class="empty">{{ _('Условий пока нет') }}</li>{% endfor %}
   </ul>
   <form class="rule-form" method="post" action="/requirements">
+    <input type="hidden" name="profile" value="{{ profile.id }}">
     <input name="text" placeholder="{{ _('Условие, как его прочитает ученик') }}" required>
     <select name="rule">
       <option value="ai">{{ _('проверяет ИИ') }}</option>
@@ -76,6 +130,5 @@
     <input name="value" placeholder="{{ _('Значение') }}" size="10">
     <button class="btn">{{ _('Добавить') }}</button>
   </form>
-  <p class="muted small">{{ _('Оформление по школьным правилам проверяется всегда, его в список добавлять не нужно.') }}</p>
 </section>
 {% endblock %}

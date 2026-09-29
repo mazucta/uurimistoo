@@ -228,3 +228,21 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .marks li { align-items: flex-start; }
 .marks .good, .checks .good { color: var(--ok); margin-top: 2px; }
 .marks .lost { color: var(--bad); margin-top: 2px; }
+
+/* профили проверки */
+.profiles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 18px; }
+.chip { padding: 6px 12px; border: 1px solid var(--line); border-radius: 99px; font-size: 14px; background: var(--card); }
+.chip.on { background: var(--blue-soft); border-color: #c3d0f7; color: var(--blue); font-weight: 500; }
+.chip-form { display: flex; gap: 6px; }
+.chip-form input { padding: 5px 10px; font-size: 14px; width: 160px; }
+.sub-head { font-size: 15px; margin: 18px 0 10px; }
+.rules-form { display: grid; gap: 10px; max-width: 560px; }
+.rules-form .field { display: grid; gap: 4px; }
+.rules-form .field > span:first-child { font-size: 13px; color: var(--muted); }
+.rules-form input { padding: 7px 10px; }
+.rules-form .form-row { gap: 8px; }
+.rules-form .form-row input { width: auto; flex: 1 1 0; min-width: 0; }
+.switches input { width: auto; flex: none; }
+.switches label { white-space: nowrap; }
+.switches { display: flex; flex-wrap: wrap; gap: 14px; font-size: 14px; }
+.switches label { display: flex; align-items: center; gap: 6px; }

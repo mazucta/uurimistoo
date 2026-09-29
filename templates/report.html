@@ -5,7 +5,7 @@
 <nav class="crumbs"><a href="/papers">{{ _('Проверки работ') }}</a> / {{ p.filename }}</nav>
 <div class="page-head">
   <div><h1>{{ p.title or p.filename }}</h1>
-    <p class="muted">{% if p.student %}{{ p.student }} · {% endif %}{{ p.chars }} {{ _('знаков') }} · {{ p.uploaded_at|dt }}</p></div>
+    <p class="muted">{% if p.student %}{{ p.student }} · {% endif %}{{ p.chars }} {{ _('знаков') }} · {{ p.uploaded_at|dt }}{% if profile %} · {{ _(profile) }}{% endif %}</p></div>
   <div class="row-meta">
     <form method="post" action="/papers/{{ p.id }}/recheck"><button class="btn">{{ _('Проверить заново') }}</button></form>
     <form method="post" action="/papers/{{ p.id }}/delete" onsubmit="return confirm('{{ _('Удалить проверку вместе с файлом?') }}')"><button class="btn-link danger">{{ _('Удалить') }}</button></form>
