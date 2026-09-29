@@ -15,6 +15,10 @@
 {% if me %}
 <header class="top"><div class="wrap top-in">
   <a class="logo" href="/"><span class="logo-mark">U</span><span class="logo-text">{{ _('Исследовательская работа') }}</span></a>
+  {% if me %}<nav class="nav">
+    <a class="{{ 'on' if request.path.startswith('/papers') }}" href="/papers">{{ _('Проверки работ') }}</a>
+    <a class="{{ 'on' if request.path.startswith('/materials') }}" href="/materials">{{ _('Материалы к уроку') }}</a>
+  </nav>{% endif %}
   <div class="me">
     <span class="langs">{% for code in langs %}<a class="{{ 'on' if code == lang }}" href="?lang={{ code }}">{{ code|upper }}</a>{% endfor %}</span>
     <span class="me-name">{{ me.name }}</span>

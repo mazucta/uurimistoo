@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ m.topic }}{% endblock %}
+{% block head %}{% if m.status == 'pending' %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block main %}
+<nav class="crumbs"><a href="/materials">{{ _('Материалы к уроку') }}</a> / {{ _(m.name) }}</nav>
+<div class="page-head">
+  <div><h1>{{ m.topic }}</h1>
+    <p class="muted">{{ _(m.name) }}{% if m.grade %} · {{ m.grade }}{% endif %} · {{ m.created_at|dt }}</p></div>
+  <div class="row-meta">
+    <form method="post" action="/materials/{{ m.id }}/again"><button class="btn">{{ _('Переделать') }}</button></form>
+    <form method="post" action="/materials/{{ m.id }}/delete" onsubmit="return confirm('{{ _('Удалить материал?') }}')"><button class="btn-link danger">{{ _('Удалить') }}</button></form>
+  </div>
+</div>
+
+{% if m.status == 'pending' %}
+<div class="banner warn">{{ _('Готовим материал. Страница обновится сама.') }}</div>
+{% elif m.status == 'error' %}
+<div class="banner danger">{{ _('Не получилось') }}{% if m.note %}: {{ _(m.note) }}{% endif %}</div>
+{% endif %}
+
+{% if m.kind == 'slides' and m.data.slides %}
+<div class="slides">
+  {% for s in m.data.slides %}
+  <section class="card slide">
+    <div class="card-head"><h2><span class="muted">{{ loop.index }}.</span> {{ s.title }}</h2></div>
+    <ul class="points">{% for p in s.points %}<li>{{ p }}</li>{% endfor %}</ul>
+    {% if s.question %}<p class="ask"><b>{{ _('Вопрос классу') }}:</b> {{ s.question }}</p>{% endif %}
+    {% if s.notes %}<p class="muted small">{{ _('Учителю') }}: {{ s.notes }}</p>{% endif %}
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if m.kind == 'quiz' and m.data.questions %}
+<section class="card">
+  <div class="card-head"><h2>{{ m.data.title or _('Проверочные вопросы') }}</h2>
+    <span class="muted small">{{ m.data.questions|length }}</span></div>
+  <ol class="quiz">
+    {% for q in m.data.questions %}
+    <li>
+      <div class="q-head"><span class="badge tiny {{ 'ok' if q.level == 'easy' else 'warn' if q.level == 'medium' else 'danger' }}">
+        {{ _('лёгкий') if q.level == 'easy' else _('средний') if q.level == 'medium' else _('трудный') }}</span>
+        <span class="grow">{{ q.question }}</span></div>
+      {% if q.options %}<ul class="options">{% for o in q.options %}<li>{{ o }}</li>{% endfor %}</ul>{% endif %}
+      <details><summary>{{ _('Ответ') }}</summary><p>{{ q.answer }}</p></details>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
+{% if m.kind == 'ideas' and m.data.ideas %}
+<div class="ideas">
+  {% for i in m.data.ideas %}
+  <section class="card">
+    <div class="card-head"><h2>{{ i.title }}</h2>
+      <span class="muted small">{{ i.minutes }} {{ _('мин') }}</span></div>
+    <p>{{ i.what }}</p>
+    <p class="muted small">{{ _('Нужно') }}: {{ i.needs }}</p>
+    <p class="small good">{{ _('Как понять, что получилось') }}: {{ i.assess }}</p>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

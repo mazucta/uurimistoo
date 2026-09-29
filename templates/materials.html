@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Материалы к уроку') }}{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div><h1>{{ _('Материалы к уроку') }}</h1>
+    <p class="muted">{{ _('Презентация, проверочные вопросы и идеи интерактивных заданий по вашей теме.') }}</p></div>
+</div>
+
+{% if error %}<div class="banner danger">{{ error }}</div>{% endif %}
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Новый материал') }}</h2></div>
+  <form class="make" method="post" action="/materials">
+    <div class="kinds">
+      {% for key, name in kinds %}
+      <label class="kind"><input type="radio" name="kind" value="{{ key }}" {{ 'checked' if loop.first }}>
+        <span>{{ _(name) }}</span></label>
+      {% endfor %}
+    </div>
+    <input name="topic" placeholder="{{ _('Тема урока') }}" value="{{ form.topic if form }}" required>
+    <div class="form-row">
+      <input name="grade" placeholder="{{ _('Класс или возраст') }}" value="{{ form.grade if form }}">
+      <input name="count" type="number" min="3" max="30" value="8" title="{{ _('Сколько слайдов, вопросов или идей') }}">
+    </div>
+    <input name="extra" placeholder="{{ _('Пожелания: на что сделать упор, чего избегать') }}" value="{{ form.extra if form }}">
+    <button class="btn primary">{{ _('Подготовить') }}</button>
+  </form>
+  <p class="muted small">{{ _('Готовится около минуты. Материал можно переделать, если получилось не то.') }}</p>
+  {% if backend == 'none' %}<p class="muted small">{{ _('Проверка ИИ выключена: не задан ключ ANTHROPIC_API_KEY. Оформление и числовые условия считаются всё равно.') }}</p>{% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Готовые материалы') }}</h2></div>
+  <div class="scroll"><table class="t">
+    <thead><tr><th>{{ _('Тема') }}</th><th>{{ _('Вид') }}</th><th class="num">{{ _('Сколько') }}</th>
+      <th>{{ _('Состояние') }}</th><th class="num">{{ _('Создано') }}</th><th></th></tr></thead>
+    <tbody>
+    {% for m in materials %}
+      <tr>
+        <td><a href="/materials/{{ m.id }}">{{ m.topic }}</a>{% if m.grade %}<div class="muted small">{{ m.grade }}</div>{% endif %}</td>
+        <td>{{ _(m.name) }}</td>
+        <td class="num">{{ m.count }}</td>
+        <td>
+          {% if m.status == 'pending' %}<span class="badge warn">{{ _('идёт') }}</span>
+          {% elif m.status == 'error' %}<span class="badge danger">{{ _('ошибка') }}</span>
+          {% else %}<span class="badge ok">{{ _('готово') }}</span>{% endif %}
+        </td>
+        <td class="num nowrap">{{ m.created_at|dt }}</td>
+        <td class="num"><a class="btn small" href="/materials/{{ m.id }}">{{ _('Открыть') }}</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="empty">{{ _('Пока ничего не создано') }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endblock %}

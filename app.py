@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS papers(
   text TEXT NOT NULL DEFAULT '', data BLOB, chars INTEGER NOT NULL DEFAULT 0,
   ai_status TEXT, ai_note TEXT, verdict TEXT, verdict_note TEXT, lang TEXT NOT NULL DEFAULT 'uk',
   profile_id INTEGER REFERENCES profiles(id), uploaded_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS materials(
+  id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id),
+  kind TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '', grade TEXT NOT NULL DEFAULT '',
+  extra TEXT NOT NULL DEFAULT '', count INTEGER NOT NULL DEFAULT 8, lang TEXT NOT NULL DEFAULT 'uk',
+  status TEXT NOT NULL DEFAULT 'pending', note TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS findings(
   id INTEGER PRIMARY KEY, paper_id INTEGER NOT NULL REFERENCES papers(id),
   kind TEXT NOT NULL CHECK(kind IN ('format','req','source','claim','rubric','photo','sign','praise','sense','lang')),
@@ -194,6 +200,59 @@ strengths: от двух до четырёх сильных сторон все�
                                                 "enum": ["орфография", "пунктуация", "грамматика", "стиль"]},
                                        "fix": {"type": "string"}}}}}),
 }
+
+# Раздел «Материалы»: что учитель просит сделать и в каком виде это вернуть.
+MATERIALS = {
+    "slides": {
+        "name": "Презентация к уроку",
+        "task": """Составь презентацию к уроку по теме. Слайдов: {count}.
+Каждый слайд: title (заголовок, до семи слов), points (от двух до четырёх тезисов, каждый одним предложением),
+question (вопрос классу по этому слайду или пустая строка), notes (что учителю сказать вслух, два-три предложения).
+Первый слайд вводит тему и говорит, зачем она нужна, последний собирает выводы. Тезисы конкретные: цифры, примеры,
+имена, а не общие слова. Учитывай возраст класса.""",
+        "schema": {"title": {"type": "string"},
+                   "slides": {"type": "array", "items": {
+                       "type": "object", "additionalProperties": False,
+                       "required": ["title", "points", "question", "notes"],
+                       "properties": {"title": {"type": "string"},
+                                      "points": {"type": "array", "items": {"type": "string"}},
+                                      "question": {"type": "string"}, "notes": {"type": "string"}}}}},
+    },
+    "quiz": {
+        "name": "Проверочные вопросы",
+        "task": """Составь проверочные вопросы по теме. Вопросов: {count}.
+Каждый вопрос: question (сам вопрос), kind (choice — выбор из вариантов, short — короткий ответ,
+open — развёрнутый ответ), options (для choice четыре варианта, для остальных пустой список),
+answer (правильный ответ для учителя, для open — что должно прозвучать), level (easy, medium, hard).
+Сделай вопросы разного уровня: примерно поровну лёгких, средних и трудных. Проверяй понимание, а не память:
+трудные вопросы должны требовать объяснить причину или сравнить.""",
+        "schema": {"title": {"type": "string"},
+                   "questions": {"type": "array", "items": {
+                       "type": "object", "additionalProperties": False,
+                       "required": ["question", "kind", "options", "answer", "level"],
+                       "properties": {"question": {"type": "string"},
+                                      "kind": {"type": "string", "enum": ["choice", "short", "open"]},
+                                      "options": {"type": "array", "items": {"type": "string"}},
+                                      "answer": {"type": "string"},
+                                      "level": {"type": "string", "enum": ["easy", "medium", "hard"]}}}}},
+    },
+    "ideas": {
+        "name": "Идеи интерактивных заданий",
+        "task": """Предложи идеи интерактивных заданий для урока по теме. Идей: {count}.
+Каждая идея: title (название, до шести слов), what (что делают ученики, два-три предложения, по шагам),
+needs (что нужно: доска, телефоны, бумага, ничего), minutes (сколько минут занимает, число),
+assess (как учителю понять, что получилось). Идеи должны быть разными по формату: работа в парах, спор,
+работа с данными, ролевая игра, быстрый опрос, разбор ошибки. Никаких «обсудите в группах» без подробностей:
+пиши, что именно обсуждают и что сдают в конце.""",
+        "schema": {"ideas": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["title", "what", "needs", "minutes", "assess"],
+            "properties": {"title": {"type": "string"}, "what": {"type": "string"},
+                           "needs": {"type": "string"}, "minutes": {"type": "integer"},
+                           "assess": {"type": "string"}}}}},
+    },
+}
+
 
 AI_SUMMARY = ("""summary: три-четыре предложения о работе в целом и о том, на что учителю посмотреть в первую очередь.""",
               {"summary": {"type": "string"}})
@@ -636,6 +695,40 @@ def run_ai(pid):
         con.close()
 
 
+# ---------- материалы к уроку ----------
+
+def make_material(mid):
+    """Готовим материал в фоне: учителю не нужно ждать ответа страницей."""
+    con = sqlite3.connect(DB)
+    con.row_factory = sqlite3.Row
+    try:
+        m = con.execute("SELECT * FROM materials WHERE id=?", (mid,)).fetchone()
+        spec = MATERIALS[m["kind"]]
+        speak = {"et": "eesti keeles (по-эстонски)", "uk": "українською мовою (по-украински)"}.get(
+            m["lang"], "українською мовою (по-украински)")
+        system = ("Ты помогаешь учителю гимназии готовить урок. Отвечай конкретно и по делу, "
+                  "без общих слов и без воды.\n\n" + spec["task"].format(count=m["count"])
+                  + f"\n\nВЕСЬ ответ пиши {speak}.")
+        content = (f"<тема>\n{m['topic']}\n</тема>\n<класс>\n{m['grade'] or 'гимназия'}\n</класс>"
+                   + (f"\n<пожелания учителя>\n{m['extra']}\n</пожелания учителя>" if m["extra"] else ""))
+        schema = {"type": "object", "additionalProperties": False,
+                  "required": list(spec["schema"]), "properties": spec["schema"]}
+        result = ask_claude(system, content, schema)
+        con.execute("UPDATE materials SET status='done', content=?, note='' WHERE id=?",
+                    (json.dumps(result, ensure_ascii=False), mid))
+    except Exception as ex:  # фоновый поток: ошибка должна стать статусом, иначе материал зависнет
+        app.logger.exception("Материал %s не получился", mid)
+        con.execute("UPDATE materials SET status='error', note=? WHERE id=?", (ai_error_text(ex), mid))
+    finally:
+        con.commit()
+        con.close()
+
+
+def start_material(mid):
+    run("UPDATE materials SET status='pending', note='' WHERE id=?", mid)
+    threading.Thread(target=make_material, args=(mid,), daemon=True).start()
+
+
 def ai_error_text(ex):
     if isinstance(ex, subprocess.TimeoutExpired):
         return "Claude Code не ответил за 20 минут"
@@ -971,6 +1064,60 @@ def delete_profile(me, prid):
     run("DELETE FROM requirements WHERE profile_id=?", prid)
     run("DELETE FROM profiles WHERE id=?", prid)
     return done("/papers#profile")
+
+
+@view("/materials", "materials.html")
+def materials_home(me):
+    rows = q("""SELECT id, kind, topic, grade, count, status, note, created_at FROM materials
+        WHERE teacher_id=? ORDER BY id DESC LIMIT 100""", me["id"])
+    for r in rows:
+        r["name"] = MATERIALS[r["kind"]]["name"] if r["kind"] in MATERIALS else r["kind"]
+    return {"materials": rows, "kinds": [(k, v["name"]) for k, v in MATERIALS.items()], "backend": backend()}
+
+
+@view("/materials", method="POST")
+def add_material(me):
+    d = body()
+    kind = d.get("kind") if d.get("kind") in MATERIALS else "slides"
+    topic = (d.get("topic") or "").strip()[:300]
+    if not topic:
+        return fail("Напишите тему", "materials.html", materials=[], backend=backend(),
+                    kinds=[(k, v["name"]) for k, v in MATERIALS.items()])
+    try:
+        count = min(30, max(3, int(d.get("count") or 8)))
+    except ValueError:
+        count = 8
+    mid = run("""INSERT INTO materials(teacher_id,kind,topic,grade,extra,count,lang,created_at)
+        VALUES(?,?,?,?,?,?,?,?)""", me["id"], kind, topic, (d.get("grade") or "").strip()[:100],
+        (d.get("extra") or "").strip()[:500], count, lang(), time.time()).lastrowid
+    start_material(mid)
+    return done(f"/materials/{mid}", id=mid)
+
+
+@view("/materials/<int:mid>", "material.html")
+def material(me, mid):
+    m = q1("SELECT * FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
+    try:
+        m["data"] = json.loads(m["content"] or "{}")
+    except ValueError:
+        m["data"] = {}
+    m["name"] = MATERIALS[m["kind"]]["name"] if m["kind"] in MATERIALS else m["kind"]
+    return {"m": m}
+
+
+@view("/materials/<int:mid>/again", method="POST")
+def repeat_material(me, mid):
+    q1("SELECT id FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
+    run("UPDATE materials SET lang=? WHERE id=?", lang(), mid)
+    start_material(mid)
+    return done(f"/materials/{mid}")
+
+
+@view("/materials/<int:mid>/delete", method="POST")
+def delete_material(me, mid):
+    q1("SELECT id FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
+    run("DELETE FROM materials WHERE id=?", mid)
+    return done("/materials")
 
 
 @view("/requirements", method="POST")
