@@ -18,16 +18,14 @@ services:
     envVars:
       # - key: DB
       #   value: /data/data.db
-      - key: DEMO
-        value: "1"           # демонстрационная база и вход demo, только просмотр. Для рабочего окружения убрать
       - key: BEHIND_PROXY
         value: "1"
       - key: PYTHON_VERSION
         value: "3.13.7"
       - key: AI_MODEL
         value: claude-sonnet-5-5
-      # ANTHROPIC_API_KEY здесь намеренно нет: сначала показываем демо-отчёт без ключа,
-      # ключ добавляется переменной в панели Render, когда проверка нужна вживую.
+      - key: ANTHROPIC_API_KEY
+        sync: false          # значение вводится в панели Render при создании, в репозитории его нет
       # Canva: ключи интеграции из Canva Developer Portal задаются в панели Render, здесь только адрес возврата
       # - key: CANVA_REDIRECT
       #   value: https://uurimistoo.onrender.com/canva/callback
