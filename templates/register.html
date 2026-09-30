@@ -8,7 +8,7 @@
     {% if error %}<p class="error">{{ _(error) }}</p>{% endif %}
     <label class="field"><span>{{ _('Имя') }}</span><input name="name" value="{{ form.name if form }}" autocomplete="name" required autofocus></label>
     <label class="field"><span>{{ _('Логин') }}</span><input name="login" value="{{ form.login if form }}" autocomplete="username" autocapitalize="none" required></label>
-    <label class="field"><span>{{ _('Пароль') }}</span><input name="password" type="password" autocomplete="new-password" minlength="6" required></label>
+    <label class="field"><span>{{ _('Пароль') }}</span><input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
     {% if need_code %}<label class="field"><span>{{ _('Код приглашения') }}</span><input name="code" required></label>{% endif %}
     <button class="btn primary wide">{{ _('Создать аккаунт') }}</button>
     <p class="muted small">{{ _('Уже есть аккаунт?') }} <a href="/login">{{ _('Войти') }}</a></p>

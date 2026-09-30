@@ -10,6 +10,8 @@
   <div><h1>{{ p.title or p.filename }}</h1>
     <p class="muted">{% if p.student %}{{ p.student }} · {% endif %}{{ p.chars }} {{ _('знаков') }} · {{ p.uploaded_at|dt }}{% if profile %} · {{ _(profile) }}{% endif %}</p></div>
   <div class="row-meta">
+    <a class="btn" href="/papers/{{ p.id }}/file">{{ _('Скачать отчёт') }}</a>
+    <button type="button" class="btn" onclick="print()">{{ _('Печать или PDF') }}</button>
     <form method="post" action="/papers/{{ p.id }}/recheck"><button class="btn">{{ _('Проверить заново') }}</button></form>
     <form method="post" action="/papers/{{ p.id }}/delete" onsubmit="return confirm('{{ _('Удалить проверку вместе с файлом?') }}')"><button class="btn-link danger">{{ _('Удалить') }}</button></form>
   </div>
@@ -19,13 +21,15 @@
 <a class="stat {{ cls }}" href="#{{ href }}"><div class="label">{{ label }}</div>
   <div class="num {{ 'word' if num is string }}">{{ num }}{% if of is not none %} <small>/ {{ of }}</small>{% endif %}</div></a>
 {% endmacro %}
+{% macro vtext(v) %}{{ _('похоже на работу ученика') if v == 'student' else _('есть признаки текста от ИИ') if v == 'ai' else _('не понять') }}{% endmacro %}
+{% set verdict = teacher.verdict or p.verdict %}
+{% set final_score = teacher_score if teacher_score is not none else score %}
 {% macro passed(items) %}{{ items|selectattr('status', 'equalto', 'pass')|list|length }}{% endmacro %}
 {% macro failing(items) %}{{ 'bad' if items|selectattr('status', 'equalto', 'fail')|list }}{% endmacro %}
 <nav class="stats">
-  {% if score is not none and checks.do_rubric %}{{ tile('score', _('Предварительная оценка'), score, max_score, 'accent') }}{% endif %}
-  {% if checks.do_authorship and p.verdict %}{{ tile('authorship', _('Сам ли ученик писал работу'),
-      _('похоже на работу ученика') if p.verdict == 'student' else _('есть признаки текста от ИИ') if p.verdict == 'ai' else _('не понять'),
-      cls='bad' if p.verdict == 'ai' else 'warn' if p.verdict != 'student' else '') }}{% endif %}
+  {% if score is not none and checks.do_rubric %}{{ tile('score', _('оценка учителя') if teacher_score is not none else _('Предварительная оценка'), final_score, max_score, 'accent') }}{% endif %}
+  {% if checks.do_authorship and verdict %}{{ tile('authorship', _('Сам ли ученик писал работу'), vtext(verdict)|trim,
+      cls='bad' if verdict == 'ai' else 'warn' if verdict != 'student' else '') }}{% endif %}
   {% if checks.do_format %}{{ tile('format', _('Оформление'), passed(format)|int, format|length, failing(format)) }}{% endif %}
   {% if checks.do_req %}{{ tile('reqs', _('Условия учителя'), passed(reqs)|int, reqs|length, failing(reqs)) }}{% endif %}
   {% if checks.do_sense %}{{ tile('sense', _('Смысл и содержание'), sense|length, cls='warn' if sense else '') }}{% endif %}
@@ -39,19 +43,33 @@
 <section class="card score-card" id="score">
   <div class="card-head"><h2>{{ _('Предварительная оценка') }}</h2>
     <span class="muted small">{{ _('баллы предлагает ИИ, ставит учитель') }}</span></div>
-  <div class="score"><b>{{ score }}</b> <span class="muted">/ {{ max_score }}</span></div>
+  <div class="score"><b>{{ final_score }}</b> <span class="muted">/ {{ max_score }}</span>
+    {% if teacher_score is not none %}<span class="badge ok">{{ _('оценка учителя') }}</span>
+    <span class="badge">{{ _('ИИ предлагал') }}: {{ score }}</span>
+    {% else %}<span class="badge warn">{{ _('не подтверждено учителем') }}</span>{% endif %}</div>
+  <form method="post" action="/papers/{{ p.id }}/marks">
   <ul class="checks marks">
     {% for m in rubric %}
+    {% set mine = (m.teacher.score if m.teacher else m.status)|string %}
     <li>
-      <span class="mark num">{{ m.status or '—' }}</span>
+      <span class="mark num" title="{{ _('ИИ предлагал') }}">{{ m.status or '—' }}</span>
       <span class="grow">
         <b>{{ _(m.label) }}</b>
+        {% if m.teacher %}<span class="badge tiny {{ 'ok' if mine == m.status else 'info' }}">{{ _('подтверждено') if mine == m.status else _('изменено') }}</span>{% endif %}
         {% if m.note %}<div class="small good">+ {{ m.note }}</div>{% endif %}
         {% if m.extra %}<div class="small lost">− {{ m.extra }}</div>{% endif %}
+        <span class="mark-edit">
+          <select name="score-{{ m.position }}" aria-label="{{ _('оценка учителя') }}">
+            {% for n in [5, 4, 3, 2, 1] %}<option {{ 'selected' if n|string == mine }}>{{ n }}</option>{% endfor %}
+          </select>
+          <input name="note-{{ m.position }}" value="{{ m.teacher.note if m.teacher }}" placeholder="{{ _('Комментарий учителя') }}" maxlength="300">
+        </span>
       </span>
     </li>
     {% endfor %}
   </ul>
+  <button class="btn primary">{{ _('Сохранить оценку учителя') }}</button>
+  </form>
 </section>
 
 {% if praise %}
@@ -69,8 +87,11 @@
 
 {% if checks.do_authorship %}<section class="card" id="authorship">
   <div class="card-head"><h2>{{ _('Сам ли ученик писал работу') }}</h2>
-    {% if p.verdict %}<span class="badge {{ 'ok' if p.verdict == 'student' else 'danger' if p.verdict == 'ai' else 'warn' }}">
-      {{ _('похоже на работу ученика') if p.verdict == 'student' else _('есть признаки текста от ИИ') if p.verdict == 'ai' else _('не понять') }}</span>{% endif %}</div>
+    {% if verdict %}<span class="badge {{ 'ok' if verdict == 'student' else 'danger' if verdict == 'ai' else 'warn' }}">
+      {{ vtext(verdict) }}{% if teacher.verdict %} · {{ _('решение учителя') }}{% endif %}</span>
+    {% else %}<span class="badge warn">{{ _('не подтверждено учителем') }}</span>{% endif %}</div>
+  {% if teacher.verdict_note %}<p><b>{{ _('решение учителя') }}:</b> {{ teacher.verdict_note }}</p>{% endif %}
+  {% if p.verdict %}<p class="muted small">{{ _('ИИ') }}: {{ vtext(p.verdict) }}{% if not teacher.verdict %} · {{ _('не подтверждено учителем') }}{% endif %}</p>{% endif %}
   {% if p.verdict_note %}<p>{{ p.verdict_note }}</p>{% endif %}
   <ul class="checks">
     {% for s in signs %}
@@ -80,6 +101,16 @@
     {% else %}<li class="empty">{{ _('Пока нечего показать') }}</li>{% endfor %}
   </ul>
   <p class="muted small">{{ _('Это наблюдения, а не доказательство: по тексту нельзя надёжно установить, кто его написал. Решает учитель.') }}</p>
+  <form class="verdict-form" method="post" action="/papers/{{ p.id }}/verdict">
+    <div class="kinds">
+      {% for key in ['student', 'unclear', 'ai'] %}
+      <label class="kind"><input type="radio" name="verdict" value="{{ key }}" required {{ 'checked' if teacher.verdict == key }}>
+        <span>{{ vtext(key) }}</span></label>
+      {% endfor %}
+    </div>
+    <input name="note" value="{{ teacher.verdict_note or '' }}" placeholder="{{ _('Комментарий учителя') }}" maxlength="500">
+    <button class="btn primary">{{ _('Сохранить решение учителя') }}</button>
+  </form>
 </section>{% endif %}
 
 <section class="card">
@@ -179,7 +210,16 @@
     </div>{% endif %}
 
     {% if checks.do_sources %}<div class="card" id="sources">
-      <div class="card-head"><h3>{{ _('Источники') }} <span class="muted">{{ sources|length }}</span></h3></div>
+      <div class="card-head"><h3>{{ _('Источники') }} <span class="muted">{{ sources|length }}</span></h3>
+        {% if p.sources_edit %}<span class="badge tiny info">{{ _('список исправлен учителем') }}</span>{% endif %}</div>
+      <details class="edit">
+        <summary>{{ _('Исправить список') }}</summary>
+        <form method="post" action="/papers/{{ p.id }}/sources">
+          <textarea name="sources" rows="8">{{ sources|map(attribute='label')|join('\n') }}</textarea>
+          <p class="muted small">{{ _('Каждый источник с новой строки. Пустое поле вернёт список, найденный программой.') }}</p>
+          <button class="btn small">{{ _('Сохранить и проверить заново') }}</button>
+        </form>
+      </details>
       <ol class="source-list">
         {% for s in sources %}
         <li class="{{ s.status }}">

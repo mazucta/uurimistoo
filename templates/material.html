@@ -69,6 +69,50 @@
 
 {% else %}
 
+{% if m.kind == 'slides' and m.status == 'done' %}
+{% if canva_error %}<div class="banner danger">{{ _('Подключение к Canva истекло, подключите заново') if canva_error == 'expired' else _('Canva не приняла файл, попробуйте ещё раз') }}</div>{% endif %}
+<div class="banner info">
+  {% if canva == 'off' %}
+  <p>{{ _('Чтобы открыть презентацию в Canva: скачайте файл .pptx и перетащите его на главную страницу Canva или загрузите через Upload. Слайды станут редактируемыми, оформление можно сменить шаблоном Canva.') }}</p>
+  <div class="row-meta"><a class="btn" href="https://www.canva.com/" target="_blank" rel="noopener">{{ _('Открыть Canva') }}</a></div>
+  {% elif canva == 'connect' %}
+  <p>{{ _('Один раз подключите свой аккаунт Canva, и презентация будет создаваться в нём сама.') }}</p>
+  <div class="row-meta"><a class="btn primary" href="/canva/connect?next=/materials/{{ m.id }}">{{ _('Подключить Canva') }}</a></div>
+  {% else %}
+  {% if canva_url %}<p>{{ _('Презентация создана в вашем Canva. Ссылка на редактирование действует 30 дней, сам дизайн остаётся в Canva.') }}</p>{% endif %}
+  <div class="row-meta">
+    {% if canva_url %}<a class="btn primary" href="{{ canva_url }}" target="_blank" rel="noopener">{{ _('Открыть в Canva') }}</a>{% endif %}
+    <form method="post" action="/materials/{{ m.id }}/canva" onsubmit="this.querySelector('button').disabled = true">
+      <button class="btn {{ '' if canva_url else 'primary' }}">{{ _('Создать в Canva') }}</button></form>
+    <form method="post" action="/canva/disconnect"><button class="btn-link small">{{ _('Отключить Canva') }}</button></form>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if m.kind == 'kahoot' %}
+{% if m.status == 'done' %}
+<div class="banner info">
+  <p>{{ _('Чтобы перенести квиз в Kahoot: скачайте таблицу, в Kahoot создайте новый kahoot, нажмите Add question → Import spreadsheet и загрузите этот файл.') }}</p>
+  <div class="row-meta"><a class="btn" href="https://create.kahoot.it/" target="_blank" rel="noopener">{{ _('Открыть Kahoot') }}</a></div>
+</div>
+{% endif %}
+<section class="card">
+  <div class="card-head"><h2>{{ m.data.title or m.topic }}</h2>
+    <span class="muted small">{{ items|length }}</span></div>
+  <ol class="quiz">
+    {% for q in items %}
+    <li>
+      <div class="q-head"><span class="grow">{{ q.question }}</span>
+        <span class="muted small nowrap">{{ q.seconds }} {{ _('сек') }}</span></div>
+      <ul class="options">{% for o in q.answers %}
+        <li class="{{ 'right' if loop.index == q.correct }}">{{ o }}{% if loop.index == q.correct %} ✓{% endif %}</li>{% endfor %}</ul>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
 {% if m.kind == 'slides' %}
 <div class="slides">
   {% for s in items %}

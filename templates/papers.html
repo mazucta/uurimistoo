@@ -24,6 +24,7 @@
   <p class="muted small">{% if backend == 'cli' %}{{ _('Проверку делает Claude Code по подписке владельца компьютера. Для других учителей нужен ключ ANTHROPIC_API_KEY.') }}
   {%- elif backend == 'api' %}{{ _('Проверка идёт через ключ ANTHROPIC_API_KEY.') }}
   {%- else %}{{ _('Проверка ИИ выключена: не задан ключ ANTHROPIC_API_KEY. Оформление и числовые условия считаются всё равно.') }}{% endif %}</p>
+  {% if retention %}<p class="muted small">{{ _('Работы и отчёты удаляются автоматически, срок хранения в днях:') }} {{ retention }}</p>{% endif %}
 </section>
 
 <section class="card">
@@ -39,7 +40,7 @@
         <td><a href="/papers/{{ p.id }}">{{ p.title or p.filename }}</a>
           {% if p.student %}<div class="muted small">{{ p.student }}</div>{% endif %}</td>
         <td class="nowrap">{{ p.chars }} {{ _('знаков') }}</td>
-        <td class="num nowrap">{% if p.score %}{{ p.score }} <span class="muted small">/ 40</span>{% else %}—{% endif %}</td>
+        <td class="num nowrap">{% if p.score %}{{ p.score }} <span class="muted small">/ 40</span>{% if p.confirmed %} <span class="badge ok tiny" title="{{ _('оценка учителя') }}">✓</span>{% endif %}{% else %}—{% endif %}</td>
         <td class="num">{% if p.failed %}<span class="flag">{{ p.failed }}</span> <span class="muted small">{{ _('из') }} {{ p.checks }}</span>{% else %}—{% endif %}</td>
         <td class="num">{{ p.claims or '—' }}{% if p.ai_photos %} <span class="flag">{{ _('фото ИИ') }} {{ p.ai_photos }}</span>{% endif %}</td>
         <td>

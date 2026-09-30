@@ -25,8 +25,11 @@ services:
       - key: PYTHON_VERSION
         value: "3.13.7"
       - key: AI_MODEL
-        value: claude-sonnet-5
+        value: claude-sonnet-5-5
       # ANTHROPIC_API_KEY здесь намеренно нет: сначала показываем демо-отчёт без ключа,
       # ключ добавляется переменной в панели Render, когда проверка нужна вживую.
+      # Canva: ключи интеграции из Canva Developer Portal задаются в панели Render, здесь только адрес возврата
+      # - key: CANVA_REDIRECT
+      #   value: https://uurimistoo.onrender.com/canva/callback
       - key: REGISTER_CODE
         generateValue: true  # случайный код: посторонний зарегистрироваться не сможет

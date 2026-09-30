@@ -2,3 +2,5 @@ data.db*
 .venv/
 __pycache__/
 server.log
+backup-*.db
+.env

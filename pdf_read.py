@@ -17,6 +17,12 @@ INDENT = (20, 60)        # так выглядит абзацный отступ
 EDGE = 12                # на столько строка может не дотянуть до правого поля и всё ещё считаться полной
 # Отбивку абзаца, выравнивание по ширине и правое поле по PDF не измерить: в нём нет
 # ни ширины букв конкретного шрифта, ни границ абзаца, и правый край строки приходится угадывать.
+
+
+class TooLong(ValueError):
+    """Файл длиннее MAX_PAGES: проверять его кусок и молчать об этом нельзя, поэтому не берём вовсе."""
+
+
 UNKNOWN = frozenset({"Отбивка абзаца", "Выравнивание по ширине"})
 LIST_ITEM = re.compile(r"^\s*(?:\d{1,2}\s*[.)]|[•·–-])\s*")
 
@@ -67,11 +73,13 @@ class Doc(Paper):
         reader = PdfReader(data)
         if not reader.pages:
             raise ValueError("в файле нет страниц")
+        if len(reader.pages) > MAX_PAGES:
+            raise TooLong(f"страниц {len(reader.pages)}, предел {MAX_PAGES}")
         self.page_size = (float(reader.pages[0].mediabox.width), float(reader.pages[0].mediabox.height))
         self.pages = len(reader.pages)
         self.props = dict(reader.metadata or {})
         self.lines, self.footers = [], []
-        for number, page in enumerate(reader.pages[:MAX_PAGES], 1):
+        for number, page in enumerate(reader.pages, 1):
             self._read_page(page, number)
         if not self.lines:
             raise ValueError("в файле нет текста, возможно это скан")
@@ -251,6 +259,11 @@ if __name__ == "__main__":
          (300, 45, 12, False, "2")],
     ]))
     assert round(d.margins["left"]) == 3 and "right" not in d.margins, d.margins
+    try:  # длинный файл отклоняется целиком, а не проверяется по первым страницам
+        read(pdf([[(left, 700, 12, False, "stranica")]] * (MAX_PAGES + 1)))
+        raise AssertionError("файл длиннее предела должен отклоняться")
+    except TooLong:
+        pass
     assert round(d.margins["top"]) == 2 and round(d.margins["bottom"]) == 2, d.margins
     assert [p["text"][:9] for p in d.cover()] == ["Tema rabo", "Gimnaziya"], d.cover()
     assert [h["text"] for h in d.headings()] == ["Vvedenie", "Kasutatud allikad"], d.headings()

@@ -3,13 +3,81 @@
 {% block main %}
 <div class="page-head">
   <div><h1>{{ _('Материалы к уроку') }}</h1>
-    <p class="muted">{{ _('Презентация, проверочные вопросы и идеи интерактивных заданий по вашей теме.') }}</p></div>
+    <p class="muted">{{ _('Презентация (её можно открыть в Canva), квиз для Kahoot, проверочные вопросы и идеи интерактивных заданий по вашей теме.') }}</p></div>
 </div>
 
 {% if error %}<div class="banner danger">{{ error }}</div>{% endif %}
 
-<section class="card">
-  <div class="card-head"><h2>{{ _('Новый материал') }}</h2></div>
+{% if me and not me.readonly and backend != 'none' %}
+<section class="card chat">
+  <div class="card-head"><h2>{{ _('Помощник') }}</h2>
+    <span class="muted small grow">{{ _('задаст несколько вопросов и подготовит материал') }}</span>
+    <button type="button" class="btn-link" id="chatReset">{{ _('Начать заново') }}</button></div>
+  <div class="chat-log" id="chatLog" aria-live="polite"></div>
+  <div class="kinds" id="chatOptions"></div>
+  <form class="chat-form" id="chatForm">
+    <input id="chatInput" placeholder="{{ _('Ваш ответ') }}" aria-label="{{ _('Ваш ответ') }}" maxlength="1000" autocomplete="off" required>
+    <button class="btn primary">{{ _('Отправить') }}</button>
+  </form>
+</section>
+<script>
+(() => {
+  const $ = id => document.getElementById(id)
+  const log = $('chatLog'), opts = $('chatOptions'), form = $('chatForm'), input = $('chatInput')
+  const hello = {{ _('Здравствуйте! Что подготовить к уроку? Напишите тему или выберите вид материала.')|tojson }}
+  const kinds = [{% for key, name in kinds %}{{ _(name)|tojson }}{{ ',' if not loop.last }}{% endfor %}]
+  const thinking = {{ _('Помощник думает…')|tojson }}, broken = {{ _('Не получилось')|tojson }}
+  let messages = []
+  function bubble(cls, text) {
+    const p = document.createElement('p')
+    p.className = 'msg ' + cls
+    p.textContent = text  // только текст: ответ модели не должен стать разметкой
+    log.append(p)
+    log.scrollTop = log.scrollHeight
+    return p
+  }
+  function say(role, text) { messages.push({role, text}); bubble(role, text) }
+  function offer(list) {
+    opts.replaceChildren(...list.map(text => {
+      const b = document.createElement('button')
+      b.type = 'button'; b.className = 'chip'; b.textContent = text
+      b.onclick = () => send(text)
+      return b
+    }))
+  }
+  function start() { messages = []; log.replaceChildren(); say('assistant', hello); offer(kinds) }
+  async function send(text) {
+    say('user', text); offer([])
+    const wait = bubble('assistant wait', thinking)
+    form.querySelector('button').disabled = input.disabled = true
+    let d = {error: broken}
+    try {
+      const r = await fetch('/materials/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({messages})})
+      if (r.status === 401) return location.assign('/login')
+      d = await r.json()
+    } catch {}
+    wait.remove()
+    form.querySelector('button').disabled = input.disabled = false
+    if (d.error || !d.reply) {  // реплика не дошла: возвращаем её в поле, чтобы не набирать заново
+      messages.pop(); log.lastChild.remove(); input.value = text
+      bubble('error', d.error || broken)
+    } else {
+      say('assistant', d.reply)
+      if (d.id) return location.assign('/materials/' + d.id)
+      offer(d.options || [])
+    }
+    input.focus()
+  }
+  form.onsubmit = e => { e.preventDefault(); const text = input.value.trim(); input.value = ''; if (text) send(text) }
+  $('chatReset').onclick = start
+  start()
+})()
+</script>
+{% endif %}
+
+<details class="card fold" {{ 'open' if error or not me or me.readonly or backend == 'none' }}>
+  <summary><h2>{{ _('Новый материал') }}</h2>
+    <span class="muted small">{{ _('заполнить самому, без помощника') }}</span></summary>
   <form class="make" method="post" action="/materials">
     <div class="kinds">
       {% for key, name in kinds %}
@@ -27,7 +95,7 @@
   </form>
   <p class="muted small">{{ _('Готовится около минуты. Материал можно переделать, если получилось не то.') }}</p>
   {% if backend == 'none' %}<p class="muted small">{{ _('Проверка ИИ выключена: не задан ключ ANTHROPIC_API_KEY. Оформление и числовые условия считаются всё равно.') }}</p>{% endif %}
-</section>
+</details>
 
 <section class="card">
   <div class="card-head"><h2>{{ _('Готовые материалы') }}</h2></div>

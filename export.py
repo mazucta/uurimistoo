@@ -1,9 +1,11 @@
-"""Выгрузка материалов в файлы: презентация в .pptx, вопросы и идеи в .docx.
+"""Выгрузка материалов в файлы: презентация в .pptx (её же открывает Canva), вопросы и идеи в .docx,
+квиз в таблицу .xlsx для импорта в Kahoot.
 
 Текст берётся из того же JSON, который учитель правит на странице, поэтому файл всегда
 совпадает с тем, что он видел. Оформление простое и читаемое: шрифт, размеры, отступы.
 """
-import io
+import io, re, zipfile
+from xml.sax.saxutils import escape
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -118,8 +120,82 @@ def ideas_docx(title, ideas, labels):
     return out.getvalue()
 
 
+def report_docx(title, about, parts):
+    """Отчёт о проверке: заголовок работы, строка сведений и разделы с пунктами, пустые разделы пропускаются."""
+    doc = start_doc(title)
+    if about:
+        doc.add_paragraph(about).alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for head, lines in parts:
+        if not lines:
+            continue
+        run = doc.add_paragraph().add_run(head)
+        run.bold = True
+        run.font.size = Pt(14)
+        for line in lines:
+            doc.add_paragraph(line)
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def xlsx(rows):
+    """Одна таблица в .xlsx на zipfile: текст и числа, без стилей. Для импорта больше не нужно."""
+    def cell(ref, value):
+        if isinstance(value, int):
+            return f'<c r="{ref}"><v>{value}</v></c>'
+        text = escape(re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", str(value)))  # управляющие символы ломают XML
+        return f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>'
+    sheet = "".join(f'<row r="{i}">' + "".join(cell(f"{chr(65 + j)}{i}", v) for j, v in enumerate(row)) + "</row>"
+                    for i, row in enumerate(rows, 1))
+    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    parts = {
+        "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '</Types>',
+        "_rels/.rels": '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+        "xl/workbook.xml": f'<?xml version="1.0" encoding="UTF-8"?><workbook {ns} xmlns:r="{rel}">'
+            '<sheets><sheet name="Kahoot" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        "xl/_rels/workbook.xml.rels": '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+        "xl/worksheets/sheet1.xml": f'<?xml version="1.0" encoding="UTF-8"?><worksheet {ns}><sheetData>{sheet}</sheetData></worksheet>',
+    }
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in parts.items():
+            z.writestr(name, body)
+    return out.getvalue()
+
+
+KAHOOT_TIMES = (5, 10, 20, 30, 60, 90, 120, 240)   # другие значения Kahoot не принимает
+
+
+def kahoot_xlsx(questions):
+    """Таблица для «Import spreadsheet» в Kahoot: вопрос до 120 знаков, от двух до четырёх ответов до 75,
+    время из разрешённого списка и номер правильного ответа. Вопрос без двух ответов пропускается."""
+    rows = [["Question", "Answer 1", "Answer 2", "Answer 3", "Answer 4", "Time limit", "Correct answer(s)"]]
+    for q in questions:
+        given = [str(a).strip()[:75] for a in q.get("answers", [])][:4]
+        answers = [a for a in given if a]
+        if not str(q.get("question", "")).strip() or len(answers) < 2:
+            continue
+        # номер правильного ответа считаем после выброса пустых вариантов, иначе он съедет
+        right = min(len(given), max(1, int(q.get("correct") or 1))) - 1
+        correct = len([a for a in given[:right] if a]) + 1 if given[right] else 1
+        seconds = min(KAHOOT_TIMES, key=lambda t: abs(t - int(q.get("seconds") or 20)))
+        rows.append([q["question"].strip()[:120], *answers, *[""] * (4 - len(answers)), seconds, correct])
+    return xlsx(rows)
+
+
 def build(kind, title, data, labels):
     """Файл материала: имя файла, тип и содержимое."""
+    if kind == "kahoot":
+        return "xlsx", ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        kahoot_xlsx(data.get("questions", [])))
     if kind == "slides":
         return "pptx", ("application/vnd.openxmlformats-officedocument.presentationml.presentation",
                         slides_pptx(title, data.get("slides", []), labels))
@@ -145,4 +221,11 @@ if __name__ == "__main__":
         assert blob[:2] == b"PK" and len(blob) > 10000, len(blob)
     kind, (mime, blob) = build("slides", "Тема", {"slides": []}, labels)
     assert kind == "pptx" and "presentation" in mime and blob[:2] == b"PK"
+    table = kahoot_xlsx([{"question": "Что <это> & то?", "answers": ["а", "б" * 99, "", "в"], "correct": 4, "seconds": 27},
+                         {"question": "Без ответов", "answers": ["один"], "correct": 1, "seconds": 20}])
+    with zipfile.ZipFile(io.BytesIO(table)) as z:
+        sheet = z.read("xl/worksheets/sheet1.xml").decode()
+    assert sheet.count("<row") == 2, sheet                  # вопрос с одним ответом пропущен
+    assert "&lt;это&gt; &amp;" in sheet and "б" * 75 + "<" in sheet and "б" * 76 not in sheet
+    assert '<c r="F2"><v>30</v></c>' in sheet and '<c r="G2"><v>3</v></c>' in sheet, sheet  # время к 30, ответ в пределах
     print("ok")
