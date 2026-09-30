@@ -10,12 +10,15 @@
 <section class="card">
   <div class="card-head"><h2>{{ _('Новая проверка') }}</h2></div>
   <form class="upload" method="post" action="/papers" enctype="multipart/form-data">
-    <input name="student" placeholder="{{ _('Чья работа, для себя') }}" value="{{ form.student if form }}">
-    <select name="profile" title="{{ _('Профиль проверки') }}">
-      {% for pr in profiles %}<option value="{{ pr.id }}" {{ 'selected' if profile and pr.id == profile.id }}>{{ _(pr.name) }}</option>{% endfor %}
-    </select>
-    <input type="file" name="file" accept=".docx,.pdf" required>
-    <button class="btn primary">{{ _('Проверить') }}</button>
+    <label class="field file"><span><i class="step">1</i>{{ _('Файл работы, .docx или .pdf') }}</span>
+      <input type="file" name="file" accept=".docx,.pdf" required></label>
+    <label class="field"><span><i class="step">2</i>{{ _('Профиль проверки') }}</span>
+      <select name="profile">
+        {% for pr in profiles %}<option value="{{ pr.id }}" {{ 'selected' if profile and pr.id == profile.id }}>{{ _(pr.name) }}</option>{% endfor %}
+      </select></label>
+    <label class="field"><span><i class="step">3</i>{{ _('Чья работа, для себя') }}</span>
+      <input name="student" value="{{ form.student if form }}"></label>
+    <button class="btn primary big">{{ _('Проверить') }}</button>
   </form>
   <p class="muted small">{{ _('По .docx оформление видно точно, по .pdf оно измеряется и часть правил не проверить. Проверка с ИИ занимает несколько минут.') }}</p>
   <p class="muted small">{% if backend == 'cli' %}{{ _('Проверку делает Claude Code по подписке владельца компьютера. Для других учителей нужен ключ ANTHROPIC_API_KEY.') }}
@@ -55,9 +58,9 @@
   </table></div>
 </section>
 
-<section class="card" id="profile">
-  <div class="card-head"><h2>{{ _('Профиль проверки') }}</h2>
-    <span class="muted small">{{ _('свой набор условий и чисел оформления для каждого вида работ') }}</span></div>
+<details class="card fold" id="profile">
+  <summary><h2>{{ _('Настройки проверки') }}</h2>
+    <span class="muted small">{{ _('свой набор условий и чисел оформления для каждого вида работ') }}</span></summary>
 
   <div class="profiles">
     {% for pr in profiles %}
@@ -141,5 +144,6 @@
     <input name="value" placeholder="{{ _('Значение') }}" size="10">
     <button class="btn">{{ _('Добавить') }}</button>
   </form>
-</section>
+</details>
+<script>onhashchange = () => { if (location.hash === '#profile') document.getElementById('profile').open = true }; onhashchange()</script>
 {% endblock %}

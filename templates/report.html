@@ -15,8 +15,28 @@
   </div>
 </div>
 
+{% macro tile(href, label, num, of=None, cls='') %}
+<a class="stat {{ cls }}" href="#{{ href }}"><div class="label">{{ label }}</div>
+  <div class="num {{ 'word' if num is string }}">{{ num }}{% if of is not none %} <small>/ {{ of }}</small>{% endif %}</div></a>
+{% endmacro %}
+{% macro passed(items) %}{{ items|selectattr('status', 'equalto', 'pass')|list|length }}{% endmacro %}
+{% macro failing(items) %}{{ 'bad' if items|selectattr('status', 'equalto', 'fail')|list }}{% endmacro %}
+<nav class="stats">
+  {% if score is not none and checks.do_rubric %}{{ tile('score', _('Предварительная оценка'), score, max_score, 'accent') }}{% endif %}
+  {% if checks.do_authorship and p.verdict %}{{ tile('authorship', _('Сам ли ученик писал работу'),
+      _('похоже на работу ученика') if p.verdict == 'student' else _('есть признаки текста от ИИ') if p.verdict == 'ai' else _('не понять'),
+      cls='bad' if p.verdict == 'ai' else 'warn' if p.verdict != 'student' else '') }}{% endif %}
+  {% if checks.do_format %}{{ tile('format', _('Оформление'), passed(format)|int, format|length, failing(format)) }}{% endif %}
+  {% if checks.do_req %}{{ tile('reqs', _('Условия учителя'), passed(reqs)|int, reqs|length, failing(reqs)) }}{% endif %}
+  {% if checks.do_sense %}{{ tile('sense', _('Смысл и содержание'), sense|length, cls='warn' if sense else '') }}{% endif %}
+  {% if checks.do_language %}{{ tile('language', _('Язык и грамматика'), lang_notes|length, cls='warn' if lang_notes else '') }}{% endif %}
+  {% if checks.do_sources %}{{ tile('claims', _('Спорные места'), claims|length, cls='warn' if claims else '') }}
+  {{ tile('sources', _('Источники'), sources|length, cls='bad' if sources|selectattr('status', 'equalto', 'not_found')|list else '') }}{% endif %}
+  {% if checks.do_photos %}{{ tile('photos', _('Фото и рисунки'), photos|length, cls='bad' if photos|selectattr('status', 'equalto', 'ai')|list else '') }}{% endif %}
+</nav>
+
 {% if score is not none and checks.do_rubric %}
-<section class="card score-card">
+<section class="card score-card" id="score">
   <div class="card-head"><h2>{{ _('Предварительная оценка') }}</h2>
     <span class="muted small">{{ _('баллы предлагает ИИ, ставит учитель') }}</span></div>
   <div class="score"><b>{{ score }}</b> <span class="muted">/ {{ max_score }}</span></div>
@@ -47,7 +67,7 @@
 {% endif %}
 {% endif %}
 
-{% if checks.do_authorship %}<section class="card">
+{% if checks.do_authorship %}<section class="card" id="authorship">
   <div class="card-head"><h2>{{ _('Сам ли ученик писал работу') }}</h2>
     {% if p.verdict %}<span class="badge {{ 'ok' if p.verdict == 'student' else 'danger' if p.verdict == 'ai' else 'warn' }}">
       {{ _('похоже на работу ученика') if p.verdict == 'student' else _('есть признаки текста от ИИ') if p.verdict == 'ai' else _('не понять') }}</span>{% endif %}</div>
@@ -87,20 +107,20 @@
 
 <div class="review">
   <div>
-    {% if checks.do_format %}<section class="card">
+    {% if checks.do_format %}<section class="card" id="format">
       <div class="card-head"><h2>{{ _('Оформление') }}</h2>
         <span class="muted small">{{ format|selectattr('status', 'equalto', 'pass')|list|length }} / {{ format|length }}</span></div>
       {{ checklist(format, _('Оформление не проверено')) }}
     </section>{% endif %}
 
-    {% if checks.do_req %}<section class="card">
+    {% if checks.do_req %}<section class="card" id="reqs">
       <div class="card-head"><h2>{{ _('Условия учителя') }}</h2>
         <span class="muted small">{{ reqs|selectattr('status', 'equalto', 'pass')|list|length }} / {{ reqs|length }}</span></div>
       {{ checklist(reqs, _('Условий пока нет')) }}
     </section>{% endif %}
 
     {% if checks.do_sense %}
-    <section class="card">
+    <section class="card" id="sense">
       <div class="card-head"><h2>{{ _('Смысл и содержание') }}</h2>
         <span class="muted small">{{ _('где мысль не сходится или не доведена до конца') }}</span></div>
       <ul class="notes">
@@ -113,7 +133,7 @@
     {% endif %}
 
     {% if checks.do_language %}
-    <section class="card">
+    <section class="card" id="language">
       <div class="card-head"><h2>{{ _('Язык и грамматика') }}</h2>
         <span class="muted small">{{ lang_notes|length }}</span></div>
       <ul class="lang-list">
@@ -125,7 +145,7 @@
     </section>
     {% endif %}
 
-    {% if checks.do_sources %}<section class="card">
+    {% if checks.do_sources %}<section class="card" id="claims">
       <div class="card-head"><h2>{{ _('Спорные места') }}</h2>
         <span class="muted small">{{ _('текст со ссылкой, который источник не подтверждает') }}</span></div>
       <ul class="notes">
@@ -144,7 +164,7 @@
   </div>
 
   <aside class="side">
-    {% if checks.do_photos %}<div class="card">
+    {% if checks.do_photos %}<div class="card" id="photos">
       <div class="card-head"><h3>{{ _('Фото и рисунки') }} <span class="muted">{{ photos|length }}</span></h3></div>
       <ul class="checks">
         {% for f in photos %}
@@ -158,7 +178,7 @@
       {% if photos %}<p class="muted small">{{ _('Метаданные слетают при пересохранении и скриншоте, поэтому «метаданных нет» ничего не доказывает.') }}</p>{% endif %}
     </div>{% endif %}
 
-    {% if checks.do_sources %}<div class="card">
+    {% if checks.do_sources %}<div class="card" id="sources">
       <div class="card-head"><h3>{{ _('Источники') }} <span class="muted">{{ sources|length }}</span></h3></div>
       <ol class="source-list">
         {% for s in sources %}

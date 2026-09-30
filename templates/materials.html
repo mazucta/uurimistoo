@@ -19,8 +19,8 @@
     </div>
     <input name="topic" placeholder="{{ _('Тема урока') }}" value="{{ form.topic if form }}" required>
     <div class="form-row">
-      <input name="grade" placeholder="{{ _('Класс или возраст') }}" value="{{ form.grade if form }}">
-      <input name="count" type="number" min="3" max="30" value="8" title="{{ _('Сколько слайдов, вопросов или идей') }}">
+      <label class="field grow"><span>{{ _('Класс или возраст') }}</span><input name="grade" value="{{ form.grade if form }}"></label>
+      <label class="field grow"><span>{{ _('Сколько слайдов, вопросов или идей') }}</span><input name="count" type="number" min="3" max="30" value="8"></label>
     </div>
     <input name="extra" placeholder="{{ _('Пожелания: на что сделать упор, чего избегать') }}" value="{{ form.extra if form }}">
     <button class="btn primary">{{ _('Подготовить') }}</button>
