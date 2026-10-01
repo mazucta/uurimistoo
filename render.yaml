@@ -35,3 +35,5 @@ services:
         sync: false          # логин и пароль задаются в панели Render; учитель заводится сам при каждом запуске
       - key: TEACHER_PASSWORD
         sync: false
+      - key: ACCESS_KEY
+        generateValue: true  # секретная часть ссылки для учителей; саму ссылку учитель выше видит на странице проверок

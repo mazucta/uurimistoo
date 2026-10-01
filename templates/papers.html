@@ -7,6 +7,13 @@
 
 {% if error %}<div class="banner danger">{{ error }}</div>{% endif %}
 
+{% if share_link %}
+<div class="banner info">
+  <p><b>{{ _('Ссылка для учителей') }}:</b> <input class="share" value="{{ share_link }}" readonly onclick="this.select()"></p>
+  <p class="small">{{ _('Кто откроет эту ссылку, получит свой кабинет без регистрации: свои работы видит только он.') }}</p>
+</div>
+{% endif %}
+
 <section class="card">
   <div class="card-head"><h2>{{ _('Новая проверка') }}</h2></div>
   <form class="upload" method="post" action="/papers" enctype="multipart/form-data">

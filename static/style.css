@@ -344,3 +344,4 @@ details.edit textarea { margin: 8px 0 0; font-size: 13px; }
 .banner.info { background: var(--blue-soft); color: var(--blue-dark); }
 .banner.info p { margin: 0 0 10px; }
 .options li.right { color: var(--ok); font-weight: 600; }
+.banner input.share { margin-top: 6px; font-size: 14px; background: var(--card); }

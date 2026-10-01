@@ -35,7 +35,9 @@ REGISTRATION = os.environ.get("REGISTRATION", "on") != "off"  # off: стран�
 TEACHER_LOGIN = os.environ.get("TEACHER_LOGIN", "").strip().lower()
 TEACHER_PASSWORD = os.environ.get("TEACHER_PASSWORD", "")
 TEACHER_NAME = os.environ.get("TEACHER_NAME", "") or TEACHER_LOGIN
-REGISTER_CODE = os.environ.get("REGISTER_CODE", "")  # пусто: регистрация открыта
+REGISTER_CODE = os.environ.get("REGISTER_CODE", "")
+# Ссылка для учителей: /k/<ACCESS_KEY> даёт свой кабинет без регистрации. Пусто: ссылки нет.
+ACCESS_KEY = os.environ.get("ACCESS_KEY", "")  # пусто: регистрация открыта
 LOGIN_TRIES = 8              # столько неудачных попыток входа подряд,
 LOGIN_PAUSE = 15 * 60        # потом логин отдыхает столько секунд
 REGISTER_TRIES = 5           # регистраций с одного адреса в час
@@ -1116,6 +1118,23 @@ def register():
     return start_session(q1("SELECT id, name, login, lang FROM users WHERE id=?", uid))
 
 
+@app.get("/k/<key>")
+def access_link(key):
+    """Вход по ссылке: кто её открыл, тот получает свой кабинет; свои работы видит только он.
+    Без секретной части адреса сюда не попасть, поэтому сайт не открыт всем подряд."""
+    # ponytail: кабинет держится на cookie браузера; почистил cookie или сменил устройство — начинаешь с чистого
+    if not ACCESS_KEY or not secrets.compare_digest(key.encode(), ACCESS_KEY.encode()):
+        abort(404)
+    if current_user():
+        return redirect("/papers")
+    if not used(f"register:{request.remote_addr}", 3600, REGISTER_TRIES):
+        return translate("Слишком много регистраций с этого адреса. Попробуйте через час", lang()), 429
+    with db():
+        uid = create_teacher(db(), translate("Учитель", lang()), "link-" + secrets.token_hex(6),
+                             secrets.token_urlsafe(24), lang())  # пароля никто не знает: вход только по ссылке
+    return start_session(q1("SELECT id, name, login, lang FROM users WHERE id=?", uid))
+
+
 def create_teacher(con, name, login_, pw, lang_):
     """Учитель вместе с профилем проверки и условиями по умолчанию на его языке."""
     uid = con.execute("INSERT INTO users(name,login,pw_hash,lang,created_at) VALUES(?,?,?,?,?)",
@@ -1163,6 +1182,7 @@ def papers_page(me, profile_id=None, papers=None):
     chosen = profile_of(me["id"], profile_id if profile_id is not None else as_int(request.args, "profile"))
     return {"papers": papers if papers is not None else [], "backend": backend(me["id"]), "rules": RULES,
             "retention": RETENTION_DAYS,
+            "share_link": request.host_url + "k/" + ACCESS_KEY if ACCESS_KEY and me["login"] == TEACHER_LOGIN else "",
             "profiles": profiles_of(me["id"]), "profile": chosen, "settings": rules_of(chosen),
             "defaults": FORMAT_DEFAULTS, "requirements": requirements_of(me["id"], chosen and chosen["id"])}
 

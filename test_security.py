@@ -213,6 +213,23 @@ ok("учитель из настроек: заводится один раз с 
    (first, old, new, count) == (200, 400, 200, 1) and reqs > 0, f"{first} {old} {new} {count} {reqs}")
 A.REGISTRATION = True
 
+# Ссылка для учителей: без секрета 404, с секретом свой кабинет, повторный заход не плодит кабинеты
+A.ACCESS_KEY = "sekret-ssylki"
+bare = A.app.test_client()
+wrong = bare.get("/k/ne-tot").status_code
+go = bare.get("/k/sekret-ssylki")
+again = bare.get("/k/sekret-ssylki")
+mine = bare.get("/api/papers").json
+other_tab = A.app.test_client(); other_tab.get("/k/sekret-ssylki")
+theirs = other_tab.get("/api/papers").json
+ok("ссылка: чужой секрет 404, свой даёт кабинет, повтор не плодит", wrong == 404 and go.status_code == 302
+   and again.headers["Location"].endswith("/papers") and mine["papers"] == [] and theirs["papers"] == [],
+   f"{wrong} {go.status_code} {again.headers.get('Location')}")
+lisa_page = c.get("/api/papers", headers={"Authorization": "Bearer " + c.post("/api/login",
+    json={"login": "lisa", "password": "vtoroi-parol"}).json["token"]}).json
+ok("ссылку видит только учитель из настроек", lisa_page["share_link"].endswith("/k/sekret-ssylki")
+   and mine["share_link"] == "", repr(lisa_page.get("share_link")))
+
 # SEC-07 и SEC-04
 resp = c.get(f"/api/papers/{pid}", headers=H)
 ok("SEC-07 у отчёта Cache-Control: no-store", resp.headers.get("Cache-Control") == "no-store")
