@@ -29,5 +29,9 @@ services:
       # Canva: ключи интеграции из Canva Developer Portal задаются в панели Render, здесь только адрес возврата
       # - key: CANVA_REDIRECT
       #   value: https://uurimistoo.onrender.com/canva/callback
-      - key: REGISTER_CODE
-        generateValue: true  # случайный код: посторонний зарегистрироваться не сможет
+      - key: REGISTRATION
+        value: "off"         # регистрации нет: единственный вход это учитель ниже
+      - key: TEACHER_LOGIN
+        sync: false          # логин и пароль задаются в панели Render; учитель заводится сам при каждом запуске
+      - key: TEACHER_PASSWORD
+        sync: false

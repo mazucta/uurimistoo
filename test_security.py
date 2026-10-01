@@ -196,6 +196,23 @@ A.shutil.which = which
 del os.environ["ANTHROPIC_API_KEY"]
 ok("оплата: хозяин подпиской, другие ключом, без Claude Code все ключом", routes == ("cli", "api", "api", "api"), repr(routes))
 
+# Без регистрации: страницы нет, учитель из настроек заводится сам, пароль берётся из настроек
+A.REGISTRATION, A.TEACHER_LOGIN, A.TEACHER_NAME, A.TEACHER_PASSWORD = False, "lisa", "Ліза", "pervyi-parol"
+A.ensure_teacher(); A.ensure_teacher()  # второй запуск не плодит учителя
+first = c.post("/api/login", json={"login": "lisa", "password": "pervyi-parol"}).status_code
+A.TEACHER_PASSWORD = "vtoroi-parol"; A.ensure_teacher()
+old = c.post("/api/login", json={"login": "lisa", "password": "pervyi-parol"}).status_code
+new = c.post("/api/login", json={"login": "lisa", "password": "vtoroi-parol"}).status_code
+con = sqlite3.connect(DB)
+count = con.execute("SELECT COUNT(*) FROM users WHERE login='lisa'").fetchone()[0]
+reqs = con.execute("SELECT COUNT(*) FROM requirements r JOIN users u ON u.id=r.teacher_id WHERE u.login='lisa'").fetchone()[0]
+con.close()
+ok("без регистрации: страницы нет", c.get("/register").status_code == 404
+   and c.post("/api/register", json={"name": "x", "login": "zzz", "password": "12345678"}).status_code == 404)
+ok("учитель из настроек: заводится один раз с условиями, пароль меняется настройкой",
+   (first, old, new, count) == (200, 400, 200, 1) and reqs > 0, f"{first} {old} {new} {count} {reqs}")
+A.REGISTRATION = True
+
 # SEC-07 и SEC-04
 resp = c.get(f"/api/papers/{pid}", headers=H)
 ok("SEC-07 у отчёта Cache-Control: no-store", resp.headers.get("Cache-Control") == "no-store")

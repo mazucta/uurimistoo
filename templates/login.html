@@ -9,7 +9,7 @@
     <label class="field"><span>{{ _('Логин') }}</span><input name="login" value="{{ form.login if form }}" autocomplete="username" autocapitalize="none" required autofocus></label>
     <label class="field"><span>{{ _('Пароль') }}</span><input name="password" type="password" autocomplete="current-password" required></label>
     <button class="btn primary wide">{{ _('Войти') }}</button>
-    <p class="muted small">{{ _('Учитель без аккаунта?') }} <a href="/register">{{ _('Зарегистрироваться') }}</a>.</p>
+    {% if registration %}<p class="muted small">{{ _('Учитель без аккаунта?') }} <a href="/register">{{ _('Зарегистрироваться') }}</a>.</p>{% endif %}
   </form>
 </div>
 {% endblock %}

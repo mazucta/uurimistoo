@@ -30,6 +30,11 @@ if os.environ.get("BEHIND_PROXY"):  # на Render схему и адрес кл�
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # работа с фотографиями столько весит с запасом
+REGISTRATION = os.environ.get("REGISTRATION", "on") != "off"  # off: страницы регистрации нет вовсе
+# Учитель, который заводится сам при каждом запуске: на free-плане база стирается, а вход должен оставаться.
+TEACHER_LOGIN = os.environ.get("TEACHER_LOGIN", "").strip().lower()
+TEACHER_PASSWORD = os.environ.get("TEACHER_PASSWORD", "")
+TEACHER_NAME = os.environ.get("TEACHER_NAME", "") or TEACHER_LOGIN
 REGISTER_CODE = os.environ.get("REGISTER_CODE", "")  # пусто: регистрация открыта
 LOGIN_TRIES = 8              # столько неудачных попыток входа подряд,
 LOGIN_PAUSE = 15 * 60        # потом логин отдыхает столько секунд
@@ -1087,6 +1092,8 @@ def login():
 @app.route("/register", methods=["GET", "POST"])
 @app.post("/api/register")
 def register():
+    if not REGISTRATION:
+        abort(404)
     if request.method == "GET":
         return render_template("register.html", need_code=bool(REGISTER_CODE))
     d = body()
@@ -1103,17 +1110,34 @@ def register():
         return fail("Пароль не короче 8 символов", "register.html")
     try:
         with db():  # пользователь, профиль и условия появляются вместе или не появляются вовсе
-            uid = db().execute("INSERT INTO users(name,login,pw_hash,lang,created_at) VALUES(?,?,?,?,?)",
-                               (name, login_, generate_password_hash(pw), lang(), time.time())).lastrowid
-            prid = db().execute("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(?,?,'{}',?)",
-                                (uid, translate("Исследовательская работа", lang()), time.time())).lastrowid
-            db().executemany("INSERT INTO requirements(teacher_id,position,text,rule,value,profile_id) "
-                             "VALUES(?,?,?,?,?,?)",
-                             [(uid, i, translate(text, lang()), rule, value, prid)  # учитель потом правит их сам
-                              for i, (text, rule, value) in enumerate(DEFAULT_REQUIREMENTS, 1)])
+            uid = create_teacher(db(), name, login_, pw, lang())
     except sqlite3.IntegrityError:
         return fail("Этот логин уже занят", "register.html")
     return start_session(q1("SELECT id, name, login, lang FROM users WHERE id=?", uid))
+
+
+def create_teacher(con, name, login_, pw, lang_):
+    """Учитель вместе с профилем проверки и условиями по умолчанию на его языке."""
+    uid = con.execute("INSERT INTO users(name,login,pw_hash,lang,created_at) VALUES(?,?,?,?,?)",
+                      (name, login_, generate_password_hash(pw), lang_, time.time())).lastrowid
+    prid = con.execute("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(?,?,'{}',?)",
+                       (uid, translate("Исследовательская работа", lang_), time.time())).lastrowid
+    con.executemany("INSERT INTO requirements(teacher_id,position,text,rule,value,profile_id) VALUES(?,?,?,?,?,?)",
+                    [(uid, i, translate(text, lang_), rule, value, prid)  # учитель потом правит их сам
+                     for i, (text, rule, value) in enumerate(DEFAULT_REQUIREMENTS, 1)])
+    return uid
+
+
+def ensure_teacher():
+    """Учитель из настроек сервера: заводится, если его нет, а пароль всегда берётся из настроек."""
+    if not TEACHER_LOGIN or len(TEACHER_PASSWORD) < 8:
+        return
+    with sqlite3.connect(DB) as con:
+        row = con.execute("SELECT id, pw_hash FROM users WHERE login=?", (TEACHER_LOGIN,)).fetchone()
+        if not row:
+            create_teacher(con, TEACHER_NAME, TEACHER_LOGIN, TEACHER_PASSWORD, LANGS[0])
+        elif not check_password_hash(row[1], TEACHER_PASSWORD):
+            con.execute("UPDATE users SET pw_hash=? WHERE id=?", (generate_password_hash(TEACHER_PASSWORD), row[0]))
 
 
 @app.post("/logout")
@@ -1751,10 +1775,11 @@ def fmt_dt(ts):
 
 @app.context_processor
 def template_globals():
-    return {"lang": lang(), "langs": LANGS, "_": lambda text: translate(text, lang())}
+    return {"lang": lang(), "langs": LANGS, "_": lambda text: translate(text, lang()), "registration": REGISTRATION}
 
 
-if __name__ != "__main__":  # под gunicorn: поднимаем задачи, оборванные перезапуском
+if __name__ != "__main__":  # под gunicorn: учитель из настроек и задачи, оборванные перезапуском
+    ensure_teacher()
     resume_jobs()
 
 if __name__ == "__main__":
@@ -1798,5 +1823,6 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     local = host in ("127.0.0.1", "localhost", "::1")
     if not local or os.environ.get("WERKZEUG_RUN_MAIN") == "true":  # при автоперезагрузке код грузится дважды
+        ensure_teacher()
         resume_jobs()
     app.run(debug=local, host=host, port=int(os.environ.get("PORT", 8000)))
