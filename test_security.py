@@ -182,6 +182,39 @@ ok("материал: подготовка действительно запущ
 fid = c.post("/api/materials", headers=H, json={"kind": "kahoot", "topic": "Фотосинтез"}).json.get("id")
 ok("материал из формы тоже запускается", {"target": A.make_material, "args": (fid,), "daemon": True} in started, repr(started[-2:]))
 
+# Приложения к помощнику: тип по содержимому, чужие не берутся, в модель уходят блоками, к материалу привязываются
+import io as _io
+png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
+up = lambda headers, data, name: c.post("/api/materials/files", headers=headers,
+                                        data={"file": (_io.BytesIO(data), name)}, content_type="multipart/form-data")
+fake = up(H, b"MZ\x90\x00 exe", "shot.png").status_code
+big = up(H, b"%PDF-" + b"0" * (A.UPLOAD_MAX + 1), "big.pdf").status_code
+mine_id = up(H, png, "Знімок.png").json["files"][0]["id"]
+their_id = up(other, b"%PDF-1.4 x", "chuzhoe.pdf").json["files"][0]["id"]
+seen = {}
+def fake_claude(system, content, schema, **k):
+    seen["files"] = [f["name"] for f in k.get("files") or []]
+    return {"reply": "Готую", "options": [], "ready": True, "kind": "quiz", "topic": "Фото", "grade": "", "count": 5, "extra": ""}
+A.ask_claude = fake_claude
+mid_files = c.post("/api/materials/chat", headers=H, json={"messages": [{"role": "user", "text": "ось"}],
+                                                            "files": [mine_id, their_id, "1; DROP"]}).json.get("id")
+con = sqlite3.connect(DB)
+linked = con.execute("SELECT name FROM uploads WHERE material_id=?", (mid_files,)).fetchall()
+con.close()
+ok("приложения: подделка и большой файл отклонены", (fake, big) == (400, 400), f"{fake} {big}")
+ok("приложения: в модель и в материал идут только свои", seen.get("files") == ["Знімок.png"] and linked == [("Знімок.png",)],
+   f"{seen} {linked}")
+blocks = A.file_blocks([{"name": "a.png", "mime": "image/png", "data": png},
+                        {"name": "b.pdf", "mime": "application/pdf", "data": b"%PDF-1.4"},
+                        {"name": "c.txt", "mime": "text/plain", "data": "Тема: дроби".encode()}])
+ok("приложения: картинка, PDF и текст становятся блоками", [b["type"] for b in blocks] == ["image", "document", "text"]
+   and "Тема: дроби" in blocks[2]["text"], repr([b["type"] for b in blocks]))
+c.post(f"/api/materials/{mid_files}/delete", headers=H, json={})
+con = sqlite3.connect(DB)
+left = con.execute("SELECT COUNT(*) FROM uploads WHERE material_id=?", (mid_files,)).fetchone()[0]
+con.close()
+ok("приложения: удаляются вместе с материалом", left == 0, f"осталось {left}")
+
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))
