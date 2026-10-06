@@ -29,7 +29,7 @@ app.json.ensure_ascii = False
 if os.environ.get("BEHIND_PROXY"):  # на Render схему и адрес клиента передаёт прокси
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
-app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # работа с фотографиями столько весит с запасом
+app.config["MAX_CONTENT_LENGTH"] = 105 * 1024 * 1024  # учебник в PDF к помощнику бывает до 100 МБ
 REGISTRATION = os.environ.get("REGISTRATION", "on") != "off"  # off: страницы регистрации нет вовсе
 # Учитель, который заводится сам при каждом запуске: на free-плане база стирается, а вход должен оставаться.
 TEACHER_LOGIN = os.environ.get("TEACHER_LOGIN", "").strip().lower()
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS materials(
   created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS uploads(
   id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id), material_id INTEGER REFERENCES materials(id),
-  name TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL, created_at REAL NOT NULL);
+  name TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL, pages INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS canva_tokens(
   user_id INTEGER PRIMARY KEY REFERENCES users(id), access TEXT NOT NULL, refresh TEXT NOT NULL, expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS canva_states(
@@ -137,6 +137,8 @@ with sqlite3.connect(DB) as _c:
     for _col, _default in (("rules", "''"), ("teacher", "'{}'"), ("sources_edit", "''")):
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
             _c.execute(f"ALTER TABLE papers ADD COLUMN {_col} TEXT NOT NULL DEFAULT {_default}")
+    if "pages" not in {r[1] for r in _c.execute("PRAGMA table_info(uploads)")}:  # страницы PDF, 2026-10-06
+        _c.execute("ALTER TABLE uploads ADD COLUMN pages INTEGER NOT NULL DEFAULT 0")
     for _col, _type in (("canva_url", "TEXT NOT NULL DEFAULT ''"), ("canva_at", "REAL NOT NULL DEFAULT 0")):
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(materials)")}:
             _c.execute(f"ALTER TABLE materials ADD COLUMN {_col} {_type}")
@@ -732,6 +734,58 @@ def ask_claude_cli(system, content, schema, blocks=()):
 # Что учитель может приложить к разговору с помощником: картинки и PDF модель видит сама, из Word и текста
 # берём текст. Тип определяем по первым байтам файла, а не по имени.
 UPLOAD_MAX = 10 * 1024 * 1024
+PDF_MAX = 100 * 1024 * 1024   # учебник целиком: из него потом вырезаются нужные страницы
+PDF_SEND_PAGES = 50           # больше страниц в модель не отправляем: учитель сначала выбирает нужные
+
+
+def pdf_pages(data):
+    """Число страниц PDF или None, если файл не открывается (битый или под паролем)."""
+    try:
+        reader = pdf_read.PdfReader(io.BytesIO(data))
+        if reader.is_encrypted and not reader.decrypt(""):
+            return None
+        return len(reader.pages)
+    except Exception:
+        return None
+
+
+def parse_pages(text, total):
+    """'12-15, 20' → [12, 13, 14, 15, 20]: номера страниц файла с 1, по порядку, без повторов."""
+    out = []
+    for part in re.split(r"[,;\s]+", text.strip()):
+        if not part:
+            continue
+        m = re.fullmatch(r"(\d{1,4})(?:[-–—](\d{1,4}))?", part)
+        if not m:
+            return None
+        a, b = int(m[1]), int(m[2] or m[1])
+        if not 1 <= a <= b <= total:
+            return None
+        out += [n for n in range(a, b + 1) if n not in out]
+    return out or None
+
+
+def cut_pdf(data, pages):
+    """Новый PDF только из выбранных страниц."""
+    reader = pdf_read.PdfReader(io.BytesIO(data))
+    if reader.is_encrypted:
+        reader.decrypt("")
+    writer = pdf_read.PdfWriter()
+    for n in pages:
+        writer.add_page(reader.pages[n - 1])
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def ranges(pages):
+    """[12, 13, 14, 20] → '12–14, 20' для имени файла."""
+    out, start = [], pages[0]
+    for prev, n in zip(pages, pages[1:] + [None]):
+        if n != prev + 1:
+            out.append(f"{start}–{prev}" if prev != start else str(start))
+            start = n
+    return ", ".join(out)
 UPLOADS_PER_CHAT = 5
 
 
@@ -785,7 +839,7 @@ def own_uploads(teacher_id, ids):
     if not ids:
         return []
     marks = ",".join("?" * len(ids))
-    return q(f"SELECT id, name, mime, data FROM uploads WHERE teacher_id=? AND id IN ({marks})", teacher_id, *ids)
+    return q(f"SELECT id, name, mime, data, pages FROM uploads WHERE teacher_id=? AND id IN ({marks})", teacher_id, *ids)
 
 
 def ai_content(p, conditions, listing, r):
@@ -1606,6 +1660,8 @@ def material_chat(me):
     turns, files = d.get("messages"), own_uploads(me["id"], d.get("files") or [])
     if not isinstance(turns, list) or not turns or not all(isinstance(t, dict) for t in turns):
         return {"error": translate("Не получилось", lang())}, 400
+    if any(f["pages"] > PDF_SEND_PAGES for f in files):  # иначе в модель уйдёт весь учебник
+        return {"error": translate("В файле больше 50 страниц: укажите, какие нужны", lang())}, 400
     lines = [("Учитель: " if t.get("role") == "user" else "Помощник: ") + str(t.get("text") or "").strip()[:1000]
              for t in turns[-30:]]
     if not used(f"chat:{me['id']}", 3600, CHAT_PER_HOUR):
@@ -1628,19 +1684,38 @@ def material_chat(me):
 
 @view("/materials/files", method="POST")
 def upload_files(me):
-    """Приложения к разговору с помощником: скриншот, фото, PDF, Word или текст, до 10 МБ каждое."""
+    """Приложения к разговору с помощником: скриншот, фото, Word или текст до 10 МБ, PDF (учебник) до 100 МБ."""
     out = []
     for f in request.files.getlist("file")[:UPLOADS_PER_CHAT]:
-        data, name = f.read(UPLOAD_MAX + 1), re.sub(r"[\x00-\x1f]", "", f.filename or "file")[:120]
-        mime = sniff(data, name) if len(data) <= UPLOAD_MAX else None
-        if not mime:
-            return {"error": translate("Можно приложить картинку, PDF, Word или текст до 10 МБ", lang())}, 400
+        data, name = f.read(PDF_MAX + 1), re.sub(r"[\x00-\x1f]", "", f.filename or "file")[:120]
+        mime = sniff(data, name)
+        pages = pdf_pages(data) if mime == "application/pdf" else 0
+        if not mime or len(data) > (PDF_MAX if mime == "application/pdf" else UPLOAD_MAX) or pages is None:
+            return {"error": translate("Можно приложить картинку, Word или текст до 10 МБ и PDF до 100 МБ", lang())}, 400
         if not used(f"upload:{me['id']}", 3600, 60):
             return {"error": translate("Слишком много файлов за час, попробуйте позже", lang())}, 429
-        fid = run("INSERT INTO uploads(teacher_id,name,mime,data,created_at) VALUES(?,?,?,?,?)",
-                  me["id"], name, mime, data, time.time()).lastrowid
-        out.append({"id": fid, "name": name})
+        fid = run("INSERT INTO uploads(teacher_id,name,mime,data,pages,created_at) VALUES(?,?,?,?,?,?)",
+                  me["id"], name, mime, data, pages, time.time()).lastrowid
+        out.append({"id": fid, "name": name, "pages": pages})
     return {"files": out}
+
+
+@view("/materials/files/<int:fid>/pages", method="POST")
+def cut_upload(me, fid):
+    """Оставить в PDF только нужные страницы учебника. Целый файл заменяется вырезанным: так база не пухнет."""
+    f = q1("SELECT id, name, data, pages FROM uploads WHERE id=? AND teacher_id=? AND mime='application/pdf' "
+           "AND material_id IS NULL", fid, me["id"]) or abort(404)
+    pages = parse_pages(str(body().get("pages") or ""), f["pages"])
+    if not pages or len(pages) > PDF_SEND_PAGES:
+        return {"error": translate("Не понял страницы: напишите, например, 12-15, 20", lang())}, 400
+    data = cut_pdf(f["data"], pages)
+    name = f"{re.sub(r' [(]с[.] [^)]*[)]$', '', f['name'])} (с. {ranges(pages)})"[:160]
+    run("UPDATE uploads SET data=?, pages=?, name=? WHERE id=?", data, len(pages), name, fid)
+    try:  # чтобы учитель сразу увидел, те ли это страницы: в учебнике номер на листе и в файле часто расходятся
+        preview = re.sub(r"\s+", " ", pdf_read.PdfReader(io.BytesIO(data)).pages[0].extract_text() or "").strip()[:140]
+    except Exception:
+        preview = ""
+    return {"id": fid, "name": name, "pages": len(pages), "preview": preview}
 
 
 @view("/materials/<int:mid>", "material.html")

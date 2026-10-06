@@ -5,7 +5,7 @@
 Чего в PDF узнать нельзя (отбивка абзаца), перечислено в UNKNOWN: такие правила не проверяются.
 """
 import re, statistics
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 from docx_read import APPENDIX, CAPTION, Paper, SOURCE_HEADS
 

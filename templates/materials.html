@@ -22,7 +22,7 @@
     <input id="chatInput" placeholder="{{ _('Ваш ответ') }}" aria-label="{{ _('Ваш ответ') }}" maxlength="1000" autocomplete="off">
     <button class="btn primary">{{ _('Отправить') }}</button>
   </form>
-  <p class="muted small">{{ _('Можно приложить скриншот, фото страницы учебника, PDF или Word: кнопкой со скрепкой или вставкой скриншота в поле.') }}</p>
+  <p class="muted small">{{ _('Можно приложить скриншот, фото страницы учебника, PDF или Word: кнопкой со скрепкой или вставкой скриншота в поле. Из учебника в PDF можно оставить только нужные страницы.') }}</p>
 </section>
 <script>
 (() => {
@@ -32,7 +32,10 @@
   const kinds = [{% for key, name in kinds %}{{ _(name)|tojson }}{{ ',' if not loop.last }}{% endfor %}]
   const thinking = {{ _('Помощник думает…')|tojson }}, broken = {{ _('Не получилось')|tojson }}
   const fileBox = $('chatFiles'), picker = $('chatFile')
-  const uploadFail = {{ _('Можно приложить картинку, PDF, Word или текст до 10 МБ')|tojson }}
+  const uploadFail = {{ _('Можно приложить картинку, Word или текст до 10 МБ и PDF до 100 МБ')|tojson }}
+  const t = {pages: {{ _('Страницы')|tojson }}, example: {{ _('например 12-15, 20')|tojson }}, cut: {{ _('Обрезать')|tojson }},
+    pp: {{ _('стр.')|tojson }}, hint: {{ _('Номера страниц файла, как в просмотре PDF, а не напечатанные в учебнике')|tojson }},
+    starts: {{ _('начинается так')|tojson }}, tooBig: {{ _('В файле больше 50 страниц: укажите, какие нужны')|tojson }}}
   let messages = [], files = [], pending = []   // files: все приложения разговора, pending: ещё не отправленные
   function bubble(cls, text) {
     const p = document.createElement('p')
@@ -51,15 +54,36 @@
       return b
     }))
   }
+  function el(tag, cls, text) { const e = document.createElement(tag); e.className = cls; if (text) e.textContent = text; return e }
   function showPending() {
     fileBox.replaceChildren(...pending.map(f => {
-      const chip = document.createElement('span')
-      chip.className = 'chip'; chip.textContent = '📎 ' + f.name + ' '
-      const x = document.createElement('button')
-      x.type = 'button'; x.className = 'btn-link'; x.textContent = '✕'
+      const row = el('div', 'file-row')
+      const chip = el('span', 'chip', '📎 ' + f.name + (f.pages ? ' · ' + f.pages + ' ' + t.pp : '') + ' ')
+      const x = el('button', 'btn-link', '✕')
+      x.type = 'button'
       x.onclick = () => { pending = pending.filter(p => p !== f); showPending() }
-      chip.append(x)
-      return chip
+      chip.append(x); row.append(chip)
+      if (f.pages > 1) {  // учебник: выбрать нужные страницы
+        const box = el('form', 'cut')
+        const pages = el('input', '')
+        pages.placeholder = t.example; pages.title = t.hint; pages.setAttribute('aria-label', t.pages)
+        const go = el('button', 'btn small', t.cut)
+        box.append(pages, go)
+        box.onsubmit = async e => {
+          e.preventDefault(); go.disabled = true
+          let d = {error: broken}
+          try {
+            d = await (await fetch('/materials/files/' + f.id + '/pages', {method: 'POST',
+              headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pages: pages.value})})).json()
+          } catch {}
+          go.disabled = false
+          if (d.error) return bubble('error', d.error)
+          Object.assign(f, d); showPending()
+        }
+        row.append(box)
+      }
+      if (f.preview) row.append(el('div', 'muted small', t.starts + ': «' + f.preview + '…»'))
+      return row
     }))
   }
   async function attach(list) {
@@ -78,6 +102,7 @@
   })
   function start() { messages = []; files = []; pending = []; showPending(); log.replaceChildren(); say('assistant', hello); offer(kinds) }
   async function send(text) {
+    if (pending.some(f => f.pages > 50)) return bubble('error', t.tooBig)  // учебник целиком не отправляем
     const sent = pending
     if (sent.length) {  // модель видит, в какой момент разговора появились файлы
       text = (text ? text + '\n' : '') + '📎 ' + sent.map(f => f.name).join(', ')

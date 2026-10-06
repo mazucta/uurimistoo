@@ -188,9 +188,9 @@ png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
 up = lambda headers, data, name: c.post("/api/materials/files", headers=headers,
                                         data={"file": (_io.BytesIO(data), name)}, content_type="multipart/form-data")
 fake = up(H, b"MZ\x90\x00 exe", "shot.png").status_code
-big = up(H, b"%PDF-" + b"0" * (A.UPLOAD_MAX + 1), "big.pdf").status_code
+big = up(H, b"\x89PNG\r\n\x1a\n" + b"0" * (A.UPLOAD_MAX + 1), "big.png").status_code
 mine_id = up(H, png, "Знімок.png").json["files"][0]["id"]
-their_id = up(other, b"%PDF-1.4 x", "chuzhoe.pdf").json["files"][0]["id"]
+their_id = up(other, b"Chuzhoi tekst", "chuzhoe.txt").json["files"][0]["id"]
 seen = {}
 def fake_claude(system, content, schema, **k):
     seen["files"] = [f["name"] for f in k.get("files") or []]
@@ -214,6 +214,23 @@ con = sqlite3.connect(DB)
 left = con.execute("SELECT COUNT(*) FROM uploads WHERE material_id=?", (mid_files,)).fetchone()[0]
 con.close()
 ok("приложения: удаляются вместе с материалом", left == 0, f"осталось {left}")
+
+# Учебник в PDF: обрезка до нужных страниц, проверка диапазона, целый учебник в модель не уходит
+from pypdf import PdfWriter as _W
+book = _W()
+for _ in range(60):
+    book.add_blank_page(width=200, height=200)
+_buf = _io.BytesIO(); book.write(_buf)
+book_id = up(H, _buf.getvalue(), "Підручник.pdf").json["files"][0]
+whole = c.post("/api/materials/chat", headers=H, json={"messages": [{"role": "user", "text": "ось"}], "files": [book_id["id"]]})
+bad = c.post(f"/api/materials/files/{book_id['id']}/pages", headers=H, json={"pages": "12-99"}).status_code
+cut = c.post(f"/api/materials/files/{book_id['id']}/pages", headers=H, json={"pages": "12-14, 20"}).json
+alien = c.post(f"/api/materials/files/{book_id['id']}/pages", headers=other, json={"pages": "1"}).status_code
+ok("учебник: 60 страниц сразу не отправить, кривой диапазон и чужой файл отклонены",
+   book_id["pages"] == 60 and whole.status_code == 400 and bad == 400 and alien == 404, f"{whole.status_code} {bad} {alien}")
+ok("учебник: остаются только выбранные страницы", cut.get("pages") == 4 and cut["name"].endswith("(с. 12–14, 20)"), repr(cut))
+ok("страницы разбираются", A.parse_pages("3, 1-2, 2", 5) == [3, 1, 2] and A.parse_pages("0", 5) is None
+   and A.parse_pages("abc", 5) is None and A.ranges([1, 2, 3, 7, 9, 10]) == "1–3, 7, 9–10")
 
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
