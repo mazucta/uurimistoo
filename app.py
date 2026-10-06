@@ -139,7 +139,9 @@ with sqlite3.connect(DB) as _c:
             _c.execute(f"ALTER TABLE papers ADD COLUMN {_col} TEXT NOT NULL DEFAULT {_default}")
     if "pages" not in {r[1] for r in _c.execute("PRAGMA table_info(uploads)")}:  # страницы PDF, 2026-10-06
         _c.execute("ALTER TABLE uploads ADD COLUMN pages INTEGER NOT NULL DEFAULT 0")
-    for _col, _type in (("canva_url", "TEXT NOT NULL DEFAULT ''"), ("canva_at", "REAL NOT NULL DEFAULT 0")):
+    # revise: просьба учителя переделать материал, prev_content: версия до неё, чтобы вернуть как было
+    for _col, _type in (("canva_url", "TEXT NOT NULL DEFAULT ''"), ("canva_at", "REAL NOT NULL DEFAULT 0"),
+                        ("revise", "TEXT NOT NULL DEFAULT ''"), ("prev_content", "TEXT NOT NULL DEFAULT ''")):
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(materials)")}:
             _c.execute(f"ALTER TABLE materials ADD COLUMN {_col} {_type}")
 
@@ -968,9 +970,14 @@ def make_material(mid):
                         "примеры и формулировки, держись их уровня сложности.")
         schema = {"type": "object", "additionalProperties": False,
                   "required": list(spec["schema"]), "properties": spec["schema"]}
+        if m["revise"]:  # переделка по просьбе: модель видит текущий материал вместе с ручными правками учителя
+            content += (f"\n\n<текущий материал>\n{m['content']}\n</текущий материал>\n"
+                        f"<что изменить>\n{m['revise']}\n</что изменить>\n\n"
+                        "Переделай текущий материал по просьбе учителя. Всё, о чём он не просит, оставь как есть, "
+                        "дословно, включая его ручные правки. Число пунктов меняй, только если он об этом просит.")
         result = ask_claude(system, content, schema, effort="medium", teacher_id=m["teacher_id"], files=files)
-        con.execute("UPDATE materials SET status='done', content=?, note='' WHERE id=?",
-                    (json.dumps(result, ensure_ascii=False), mid))
+        con.execute("UPDATE materials SET status='done', content=?, note='', revise='', prev_content=? WHERE id=?",
+                    (json.dumps(result, ensure_ascii=False), m["content"] if m["revise"] else "", mid))
     except Exception as ex:  # фоновый поток: ошибка должна стать статусом, иначе материал зависнет
         app.logger.exception("Материал %s не получился", mid)
         con.execute("UPDATE materials SET status='error', note=? WHERE id=?", (ai_error_text(ex), mid))
@@ -1931,8 +1938,29 @@ def material_blob(m):
 @view("/materials/<int:mid>/again", method="POST")
 def repeat_material(me, mid):
     q1("SELECT id FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
-    run("UPDATE materials SET lang=? WHERE id=?", lang(), mid)
+    run("UPDATE materials SET lang=?, revise='' WHERE id=?", lang(), mid)  # с нуля, без прошлой просьбы
     start_material(mid, me["id"])
+    return done(f"/materials/{mid}")
+
+
+@view("/materials/<int:mid>/revise", method="POST")
+def revise_material(me, mid):
+    """Учитель пишет помощнику, что поменять в готовом материале, и тот переделывает его в фоне."""
+    m = q1("SELECT status FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
+    wish = str(body().get("request") or "").strip()[:1000]
+    if m["status"] != "done" or not wish:
+        return done(f"/materials/{mid}?edit")
+    run("UPDATE materials SET revise=?, lang=? WHERE id=?", wish, lang(), mid)
+    start_material(mid, me["id"])
+    return done(f"/materials/{mid}")
+
+
+@view("/materials/<int:mid>/undo", method="POST")
+def undo_material(me, mid):
+    """Вернуть материал, каким он был до последней просьбы. Повторное нажатие возвращает правку обратно."""
+    m = q1("SELECT content, prev_content, status FROM materials WHERE id=? AND teacher_id=?", mid, me["id"]) or abort(404)
+    if m["prev_content"] and m["status"] == "done":
+        run("UPDATE materials SET content=?, prev_content=? WHERE id=?", m["prev_content"], m["content"], mid)
     return done(f"/materials/{mid}")
 
 

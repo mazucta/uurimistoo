@@ -11,6 +11,9 @@
     <a class="btn" href="/materials/{{ m.id }}?edit">{{ _('Править') }}</a>
     <a class="btn primary" href="/materials/{{ m.id }}/file">{{ _('Скачать файл') }}</a>
     {% endif %}
+    {% if m.prev_content and m.status == 'done' and not edit %}
+    <form method="post" action="/materials/{{ m.id }}/undo"><button class="btn">{{ _('Вернуть как было') }}</button></form>
+    {% endif %}
     <form method="post" action="/materials/{{ m.id }}/again"><button class="btn">{{ _('Переделать') }}</button></form>
     <form method="post" action="/materials/{{ m.id }}/delete" onsubmit="return confirm('{{ _('Удалить материал?') }}')"><button class="btn-link danger">{{ _('Удалить') }}</button></form>
   </div>
@@ -23,6 +26,13 @@
 {% endif %}
 
 {% if edit %}
+<form class="card ask-form" method="post" action="/materials/{{ m.id }}/revise">
+  <div class="card-head"><h2>{{ _('Попросить помощника') }}</h2>
+    <span class="muted small">{{ _('опишите, что изменить, и помощник переделает материал; ваши ручные правки он сохранит') }}</span></div>
+  <textarea name="request" rows="3" maxlength="1000" required
+    placeholder="{{ _('Например: сделай вопросы проще, добавь слайд про примеры из жизни, убери термины на английском') }}"></textarea>
+  <button class="btn primary">{{ _('Переделать по просьбе') }}</button>
+</form>
 <form class="card edit-form" method="post" action="/materials/{{ m.id }}/edit">
   <div class="card-head"><h2>{{ _('Правка') }}</h2>
     <span class="muted small">{{ _('Пустой кусок будет убран. Каждый тезис или вариант ответа с новой строки.') }}</span></div>

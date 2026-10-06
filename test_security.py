@@ -232,6 +232,29 @@ ok("учебник: остаются только выбранные стран�
 ok("страницы разбираются", A.parse_pages("3, 1-2, 2", 5) == [3, 1, 2] and A.parse_pages("0", 5) is None
    and A.parse_pages("abc", 5) is None and A.ranges([1, 2, 3, 7, 9, 10]) == "1–3, 7, 9–10")
 
+# Просьба переделать материал: модель видит текущий материал и просьбу, старая версия возвращается кнопкой
+con = sqlite3.connect(DB)
+rev = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'quiz','Дроби','done',?,1)",
+                  ('{"title": "Дроби", "questions": [{"question": "Ручна правка вчителя"}]}',)).lastrowid
+con.execute("DELETE FROM limits"); con.commit()
+ok("переделка: чужой материал не переделать",
+   c.post(f"/api/materials/{rev}/revise", headers=other, json={"request": "x"}).status_code == 404)
+c.post(f"/api/materials/{rev}/revise", headers=H, json={"request": "зроби простіше"})
+seen = {}
+def reviser(system, content, schema, **k):
+    seen["prompt"] = content
+    return {"title": "Дроби", "questions": [{"question": "Простіше"}]}
+A.ask_claude = reviser
+A.make_material(rev)
+row = con.execute("SELECT status, content, prev_content, revise FROM materials WHERE id=?", (rev,)).fetchone()
+ok("переделка: просьба и ручные правки ушли в модель, старая версия сохранена",
+   "зроби простіше" in seen["prompt"] and "Ручна правка вчителя" in seen["prompt"] and row[0] == "done"
+   and "Простіше" in row[1] and "Ручна правка" in row[2] and row[3] == "", repr(row))
+c.post(f"/api/materials/{rev}/undo", headers=H, json={})
+back = con.execute("SELECT content FROM materials WHERE id=?", (rev,)).fetchone()[0]
+con.close()
+ok("переделка: «вернуть как было» возвращает прежний вариант", "Ручна правка" in back, back[:60])
+
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))

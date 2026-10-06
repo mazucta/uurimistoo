@@ -354,3 +354,6 @@ details.edit textarea { margin: 8px 0 0; font-size: 13px; }
 .file-row .cut { display: flex; gap: 6px; margin: 0; }
 .file-row .cut input { width: 170px; padding: 5px 10px; font-size: 14px; }
 .file-row .muted { flex-basis: 100%; }
+.ask-form { display: grid; gap: 10px; justify-items: start; }
+.ask-form .card-head { margin-bottom: 0; justify-self: stretch; }
+.ask-form textarea { resize: vertical; }
