@@ -12,6 +12,7 @@ import app as A
 A.threading.Thread = type("T", (), {"__init__": lambda self, **k: None, "start": lambda self: None})  # без ИИ-запросов
 c = A.app.test_client()
 failed = []
+real_ask, real_cli, real_backend = A.ask_claude, A.ask_claude_cli, A.AI_BACKEND  # до заглушек ниже
 
 
 def ok(name, good, extra=""):
@@ -254,6 +255,15 @@ c.post(f"/api/materials/{rev}/undo", headers=H, json={})
 back = con.execute("SELECT content FROM materials WHERE id=?", (rev,)).fetchone()[0]
 con.close()
 ok("переделка: «вернуть как было» возвращает прежний вариант", "Ручна правка" in back, back[:60])
+
+# Модели по задачам: проверка работы на сильной модели, помощник и материалы на лёгкой, на обоих путях
+models = []
+A.ask_claude_cli = lambda system, content, schema, blocks=(), model=None: models.append(model) or {}
+A.AI_BACKEND = "cli"
+real_ask("s", "c", {}, light=True); real_ask("s", "c", {})
+A.ask_claude_cli, A.AI_BACKEND = real_cli, real_backend
+ok("модели: лёгкие задачи на LIGHT_MODEL, проверка на SUBSCRIPTION_MODEL",
+   models == [A.LIGHT_MODEL, A.SUBSCRIPTION_MODEL] and A.LIGHT_MODEL != A.SUBSCRIPTION_MODEL, repr(models))
 
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)

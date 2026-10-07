@@ -177,6 +177,9 @@ DEFAULT_REQUIREMENTS = [
 # через Claude Code и получает Opus; остальные учителя идут через ключ API на Sonnet: там платится за токены.
 AI_MODEL = os.environ.get("AI_MODEL", "claude-sonnet-5-5")                      # через ключ API
 SUBSCRIPTION_MODEL = os.environ.get("SUBSCRIPTION_MODEL", "claude-opus-5-5")    # через подписку Claude Code
+# Лёгкие задачи (помощник, материалы, переделка по просьбе) идут на модель дешевле на любом пути: Opus нужен
+# только проверке работы, где модель сверяет источники и ставит баллы.
+LIGHT_MODEL = os.environ.get("LIGHT_MODEL", "claude-sonnet-5-5")
 SUBSCRIPTION_LOGINS = {x.strip().lower() for x in os.environ.get("SUBSCRIPTION_LOGINS", "").split(",") if x.strip()}
 AI_BACKEND = os.environ.get("AI_BACKEND", "")  # api, cli или пусто: выбрать само
 CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
@@ -642,19 +645,20 @@ def is_owner(teacher_id):
     return bool(row) and row[0].lower() in SUBSCRIPTION_LOGINS
 
 
-def ask_claude(system, content, schema, tools=None, effort="high", teacher_id=None, files=()):
+def ask_claude(system, content, schema, tools=None, effort="high", teacher_id=None, files=(), light=False):
     """files: приложения учителя (скриншоты, PDF, тексты) — уходят в модель блоками перед текстом запроса."""
     route = backend(teacher_id)
     if route == "none":
         raise RuntimeError("не задан ключ ANTHROPIC_API_KEY на сервере")
     blocks = file_blocks(files)
+    model = LIGHT_MODEL if light else SUBSCRIPTION_MODEL if route == "cli" else AI_MODEL
     if route == "cli":
-        return ask_claude_cli(system, content, schema, blocks)
+        return ask_claude_cli(system, content, schema, blocks, model)
     client = anthropic.Anthropic(timeout=CLI_TIMEOUT)  # модель подолгу ходит по источникам
     messages = [{"role": "user", "content": blocks + [{"type": "text", "text": content}] if blocks else content}]
     for _ in range(6):  # pause_turn: модель прервалась сама, её нужно продолжить тем же запросом
         r = client.beta.messages.create(
-            model=AI_MODEL, max_tokens=16000, system=system,
+            model=model, max_tokens=16000, system=system,
             betas=["server-side-fallback-2026-07-01"], fallbacks="default",
             output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
             tools=tools or [],
@@ -702,7 +706,7 @@ AI_SCHEMA = {"type": "object", "additionalProperties": False,
                                     "signs": {"type": "array", "items": {"type": "string"}}}}}}
 
 
-def ask_claude_cli(system, content, schema, blocks=()):
+def ask_claude_cli(system, content, schema, blocks=(), model=SUBSCRIPTION_MODEL):
     """Тот же запрос через Claude Code: платит подписка хозяина компьютера, ключ API не нужен.
     Модель работает в пустой папке и без права трогать файлы: ей разрешены только web-инструменты.
     Приложения учителя идут не файлами на диске, а блоками сообщения (stream-json), как в API."""
@@ -714,7 +718,7 @@ def ask_claude_cli(system, content, schema, blocks=()):
         {"type": "text", "text": prompt}]}}) + "\n" if blocks else prompt
     with tempfile.TemporaryDirectory() as work:
         r = subprocess.run(
-            [CLAUDE_CLI, "--print", *stream, "--model", SUBSCRIPTION_MODEL, "--system-prompt", system,
+            [CLAUDE_CLI, "--print", *stream, "--model", model, "--system-prompt", system,
              "--restricted", "--strict-mcp-config", "--allowed-tools", "WebFetch", "WebSearch"],
             input=message, capture_output=True, text=True, cwd=work, timeout=CLI_TIMEOUT)
     if r.returncode != 0:
@@ -975,7 +979,7 @@ def make_material(mid):
                         f"<что изменить>\n{m['revise']}\n</что изменить>\n\n"
                         "Переделай текущий материал по просьбе учителя. Всё, о чём он не просит, оставь как есть, "
                         "дословно, включая его ручные правки. Число пунктов меняй, только если он об этом просит.")
-        result = ask_claude(system, content, schema, effort="medium", teacher_id=m["teacher_id"], files=files)
+        result = ask_claude(system, content, schema, effort="medium", teacher_id=m["teacher_id"], files=files, light=True)
         con.execute("UPDATE materials SET status='done', content=?, note='', revise='', prev_content=? WHERE id=?",
                     (json.dumps(result, ensure_ascii=False), m["content"] if m["revise"] else "", mid))
     except Exception as ex:  # фоновый поток: ошибка должна стать статусом, иначе материал зависнет
@@ -1677,7 +1681,7 @@ def material_chat(me):
     try:
         a = ask_claude(f"{CHAT_SYSTEM}\n\nС учителем говори {speak}, topic и extra пиши на том же языке.",
                        "<диалог>\n" + "\n".join(lines) + "\n</диалог>", CHAT_SCHEMA, effort="low",  # ждать нельзя
-                       teacher_id=me["id"], files=files)
+                       teacher_id=me["id"], files=files, light=True)
     except Exception as ex:
         app.logger.exception("Помощник не ответил")
         return {"error": translate(ai_error_text(ex), lang())}, 502
@@ -2015,7 +2019,7 @@ if __name__ == "__main__":
     if "--ping" in sys.argv:  # проверка ключа API: один короткий запрос, стоит доли цента
         # тот же путь, что у настоящей проверки: запасная модель, схема ответа, уровень усилия
         print("учителя:", backend(), AI_MODEL, "| хозяин", sorted(SUBSCRIPTION_LOGINS) or "не задан", ":",
-              "cli" if shutil.which(CLAUDE_CLI) else "api", SUBSCRIPTION_MODEL)
+              "cli" if shutil.which(CLAUDE_CLI) else "api", SUBSCRIPTION_MODEL, "| помощник и материалы:", LIGHT_MODEL)
         try:
             answer = ask_claude("Отвечай коротко.", "Ответь одним словом: готово",
                                 {"type": "object", "additionalProperties": False, "required": ["answer"],
