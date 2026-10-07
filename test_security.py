@@ -256,14 +256,14 @@ back = con.execute("SELECT content FROM materials WHERE id=?", (rev,)).fetchone(
 con.close()
 ok("переделка: «вернуть как было» возвращает прежний вариант", "Ручна правка" in back, back[:60])
 
-# Модели по задачам: проверка работы на сильной модели, помощник и материалы на лёгкой, на обоих путях
+# Модели по задачам: разговор помощника на дешёвой модели, всё, что создаёт результат, на основной
 models = []
 A.ask_claude_cli = lambda system, content, schema, blocks=(), model=None: models.append(model) or {}
 A.AI_BACKEND = "cli"
 real_ask("s", "c", {}, light=True); real_ask("s", "c", {})
 A.ask_claude_cli, A.AI_BACKEND = real_cli, real_backend
-ok("модели: лёгкие задачи на LIGHT_MODEL, проверка на SUBSCRIPTION_MODEL",
-   models == [A.LIGHT_MODEL, A.SUBSCRIPTION_MODEL] and A.LIGHT_MODEL != A.SUBSCRIPTION_MODEL, repr(models))
+ok("модели: разговор на CHAT_MODEL, генерация на SUBSCRIPTION_MODEL",
+   models == [A.CHAT_MODEL, A.SUBSCRIPTION_MODEL] and A.CHAT_MODEL != A.SUBSCRIPTION_MODEL, repr(models))
 
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
