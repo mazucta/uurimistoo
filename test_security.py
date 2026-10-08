@@ -255,6 +255,15 @@ c.post(f"/api/materials/{rev}/undo", headers=H, json={})
 back = con.execute("SELECT content FROM materials WHERE id=?", (rev,)).fetchone()[0]
 con.close()
 ok("переделка: «вернуть как было» возвращает прежний вариант", "Ручна правка" in back, back[:60])
+con = sqlite3.connect(DB)
+con.execute("UPDATE materials SET lang='uk', status='done' WHERE id=?", (rev,)); con.commit()
+c.post(f"/api/materials/{rev}/revise?lang=et", headers=H, data={"request": "додай приклади",
+       "file": (_io.BytesIO(png), "Приклад.png")}, content_type="multipart/form-data")
+row = con.execute("SELECT lang, revise FROM materials WHERE id=?", (rev,)).fetchone()
+example = con.execute("SELECT name FROM uploads WHERE material_id=?", (rev,)).fetchall()
+con.close()
+ok("переделка: язык материала не меняется, пример прикладывается к материалу",
+   row == ("uk", "додай приклади") and example == [("Приклад.png",)], f"{row} {example}")
 
 # Модели по задачам: разговор помощника на дешёвой модели, всё, что создаёт результат, на основной
 models = []

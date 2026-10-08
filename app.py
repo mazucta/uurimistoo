@@ -979,7 +979,10 @@ def make_material(mid):
             content += (f"\n\n<текущий материал>\n{m['content']}\n</текущий материал>\n"
                         f"<что изменить>\n{m['revise']}\n</что изменить>\n\n"
                         "Переделай текущий материал по просьбе учителя. Всё, о чём он не просит, оставь как есть, "
-                        "дословно, включая его ручные правки. Число пунктов меняй, только если он об этом просит.")
+                        "дословно, включая его ручные правки. Если он просит что-то добавить (примеры, тезисы, "
+                        "вопросы, слайды), добавляй: пределы числа пунктов из задания выше при переделке не "
+                        "действуют. Новые файлы учителя (выше) — это образцы и примеры к его просьбе."
+                        " Пиши на том же языке, что и текущий материал.")
         result = ask_claude(system, content, schema, effort="medium", teacher_id=m["teacher_id"], files=files)
         con.execute("UPDATE materials SET status='done', content=?, note='', revise='', prev_content=? WHERE id=?",
                     (json.dumps(result, ensure_ascii=False), m["content"] if m["revise"] else "", mid))
@@ -1699,17 +1702,27 @@ def upload_files(me):
     """Приложения к разговору с помощником: скриншот, фото, Word или текст до 10 МБ, PDF (учебник) до 100 МБ."""
     out = []
     for f in request.files.getlist("file")[:UPLOADS_PER_CHAT]:
-        data, name = f.read(PDF_MAX + 1), re.sub(r"[\x00-\x1f]", "", f.filename or "file")[:120]
-        mime = sniff(data, name)
-        pages = pdf_pages(data) if mime == "application/pdf" else 0
-        if not mime or len(data) > (PDF_MAX if mime == "application/pdf" else UPLOAD_MAX) or pages is None:
-            return {"error": translate("Можно приложить картинку, Word или текст до 10 МБ и PDF до 100 МБ", lang())}, 400
-        if not used(f"upload:{me['id']}", 3600, 60):
-            return {"error": translate("Слишком много файлов за час, попробуйте позже", lang())}, 429
-        fid = run("INSERT INTO uploads(teacher_id,name,mime,data,pages,created_at) VALUES(?,?,?,?,?,?)",
-                  me["id"], name, mime, data, pages, time.time()).lastrowid
-        out.append({"id": fid, "name": name, "pages": pages})
+        saved = save_upload(me, f)
+        if "error" in saved:
+            return saved, 400
+        out.append(saved)
     return {"files": out}
+
+
+def save_upload(me, f, material_id=None, max_pages=None):
+    """Проверить и сохранить одно приложение. Ответ: {id, name, pages} или {error} с понятной причиной."""
+    data, name = f.read(PDF_MAX + 1), re.sub(r"[\x00-\x1f]", "", f.filename or "file")[:120]
+    mime = sniff(data, name)
+    pages = pdf_pages(data) if mime == "application/pdf" else 0
+    if not mime or len(data) > (PDF_MAX if mime == "application/pdf" else UPLOAD_MAX) or pages is None:
+        return {"error": translate("Можно приложить картинку, Word или текст до 10 МБ и PDF до 100 МБ", lang())}
+    if max_pages and pages > max_pages:
+        return {"error": translate("В файле больше 50 страниц: укажите, какие нужны", lang())}
+    if not used(f"upload:{me['id']}", 3600, 60):
+        return {"error": translate("Слишком много файлов за час, попробуйте позже", lang())}
+    fid = run("INSERT INTO uploads(teacher_id,material_id,name,mime,data,pages,created_at) VALUES(?,?,?,?,?,?,?)",
+              me["id"], material_id, name, mime, data, pages, time.time()).lastrowid
+    return {"id": fid, "name": name, "pages": pages}
 
 
 @view("/materials/files/<int:fid>/pages", method="POST")
@@ -1955,7 +1968,16 @@ def revise_material(me, mid):
     wish = str(body().get("request") or "").strip()[:1000]
     if m["status"] != "done" or not wish:
         return done(f"/materials/{mid}?edit")
-    run("UPDATE materials SET revise=?, lang=? WHERE id=?", wish, lang(), mid)
+    for f in request.files.getlist("file")[:UPLOADS_PER_CHAT]:  # примеры к просьбе: скриншот, задание, страница
+        if not f.filename:
+            continue
+        saved = save_upload(me, f, mid, max_pages=PDF_SEND_PAGES)
+        if "error" in saved:
+            page = material(me, mid)
+            return render_template("material.html", me=me, **{**page, "edit": True, "error": saved["error"],
+                                                              "wish": wish}), 400
+    # язык не трогаем: переделка не должна молча перевести материал на язык, выбранный в интерфейсе сейчас
+    run("UPDATE materials SET revise=? WHERE id=?", wish, mid)
     start_material(mid, me["id"])
     return done(f"/materials/{mid}")
 

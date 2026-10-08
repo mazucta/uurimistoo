@@ -357,3 +357,5 @@ details.edit textarea { margin: 8px 0 0; font-size: 13px; }
 .ask-form { display: grid; gap: 10px; justify-items: start; }
 .ask-form .card-head { margin-bottom: 0; justify-self: stretch; }
 .ask-form textarea { resize: vertical; }
+.ask-files { justify-self: stretch; margin: 0; }
+.ask-files input { padding: 10px; }

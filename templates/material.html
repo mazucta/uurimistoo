@@ -26,13 +26,29 @@
 {% endif %}
 
 {% if edit %}
-<form class="card ask-form" method="post" action="/materials/{{ m.id }}/revise">
+<form class="card ask-form" method="post" action="/materials/{{ m.id }}/revise" enctype="multipart/form-data">
   <div class="card-head"><h2>{{ _('Попросить помощника') }}</h2>
     <span class="muted small">{{ _('опишите, что изменить, и помощник переделает материал; ваши ручные правки он сохранит') }}</span></div>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
   <textarea name="request" rows="3" maxlength="1000" required
-    placeholder="{{ _('Например: сделай вопросы проще, добавь слайд про примеры из жизни, убери термины на английском') }}"></textarea>
+    placeholder="{{ _('Например: сделай вопросы проще, добавь слайд про примеры из жизни, убери термины на английском') }}">{{ wish or '' }}</textarea>
+  <label class="field ask-files"><span>{{ _('Примеры к просьбе: скриншот, задание или страница учебника (можно вставить скриншот в поле выше)') }}</span>
+    <input type="file" name="file" multiple accept="image/*,.pdf,.docx,.txt"></label>
   <button class="btn primary">{{ _('Переделать по просьбе') }}</button>
 </form>
+<script>
+(() => {  // скриншот из буфера: Cmd+V в поле просьбы кладёт картинку в выбор файлов
+  const form = document.querySelector('.ask-form'), box = form.querySelector('input[type=file]')
+  form.querySelector('textarea').addEventListener('paste', e => {
+    const shots = [...e.clipboardData.files].filter(f => f.type.startsWith('image/'))
+    if (!shots.length) return
+    e.preventDefault()
+    const dt = new DataTransfer()
+    for (const f of [...box.files, ...shots]) dt.items.add(f)
+    box.files = dt.files
+  })
+})()
+</script>
 <form class="card edit-form" method="post" action="/materials/{{ m.id }}/edit">
   <div class="card-head"><h2>{{ _('Правка') }}</h2>
     <span class="muted small">{{ _('Пустой кусок будет убран. Каждый тезис или вариант ответа с новой строки.') }}</span></div>
