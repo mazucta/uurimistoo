@@ -315,6 +315,41 @@ html = page.get_data(as_text=True)
 ok("рабочий лист: страница с таблицей и линиями, без «1. 1.»", page.status_code == 200 and "sheet-table" in html
    and "answer-line" in html and "Ma istu____" in html and ">1. Mis" not in html, f"код {page.status_code}")
 ok("рабочий лист: выгружается в Word", c.get(f"/api/materials/{ws}/file", headers=H).data[:2] == b"PK")
+con = sqlite3.connect(DB)
+ws_pic = con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,created_at) VALUES(1,?,'риба','image/png',?,1)",
+                     (ws, tiny)).lastrowid
+con.execute("UPDATE materials SET status='new' WHERE id=?", (ws,)); con.commit()
+A.ask_claude = lambda system, content, schema, **k: {"title": "Pildid", "tasks": [
+    {"variant": "", "title": "1. Mis see on?", "instruction": "", "kind": "questions", "items": ["", ""], "header": "",
+     "rows": [], "lines": 0, "score": 2, "answers": ["kala"], "image": 0, "pictures": [ws_pic, 424242, ws_pic]}]}
+A.make_material(ws)
+row = __import__("json").loads(con.execute("SELECT content FROM materials WHERE id=?", (ws,)).fetchone()[0])["tasks"][0]["pictures"]
+con.close()
+ok("рабочий лист: ряд картинок только из своих, без повторов", row == [ws_pic], repr(row))
+sheet = c.get(f"/api/materials/{ws}/file", headers=H).data
+ok("рабочий лист: ряд картинок попадает в Word", any(n.startswith("word/media/") for n in _zip.ZipFile(_io.BytesIO(sheet)).namelist()))
+
+# Учебники: загружаются в библиотеку, не стираются как брошенные, отдают страницы и рисунки, чужому недоступны
+from PIL import Image as _Img
+pic_buf = _io.BytesIO(); _Img.new("RGB", (400, 300), (200, 40, 40)).save(pic_buf, "PDF")  # «скан»: страница-картинка
+book_pdf = _W()
+for _ in range(3):
+    book_pdf.append(_io.BytesIO(pic_buf.getvalue()))
+_buf = _io.BytesIO(); book_pdf.write(_buf)
+r_book = c.post("/api/materials/books", headers=H, content_type="multipart/form-data",
+                data={"name": "Біологія 7", "file": (_io.BytesIO(_buf.getvalue()), "bio.pdf")})
+con = sqlite3.connect(DB)
+book_id = con.execute("SELECT id FROM uploads WHERE library=1 AND name='Біологія 7'").fetchone()[0]
+con.execute("UPDATE uploads SET created_at=0 WHERE id=?", (book_id,)); con.commit()
+A.purge_old(con); con.commit()
+kept = con.execute("SELECT COUNT(*) FROM uploads WHERE id=?", (book_id,)).fetchone()[0]
+con.close()
+took = c.post(f"/api/materials/books/{book_id}/take", headers=H, json={"pages": "2-3"}).json
+alien_take = c.post(f"/api/materials/books/{book_id}/take", headers=other, json={"pages": "1"}).status_code
+ok("учебник: хранится в библиотеке и не стирается сроком", r_book.status_code == 200 and kept == 1, f"{r_book.status_code} {kept}")
+ok("учебник: страницы и рисунки становятся вложениями, чужому недоступен",
+   took["files"][0]["name"] == "Біологія 7 (с. 2–3)" and took["files"][0]["pages"] == 2
+   and len(took["files"]) == 2 and "с. 2" in took["files"][1]["name"] and alien_take == 404, repr(took))
 
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)

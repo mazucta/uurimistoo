@@ -245,6 +245,16 @@ def worksheet_docx(title, tasks, labels, images=None):
         if t.get("instruction"):
             doc.add_paragraph().add_run(t["instruction"]).italic = True
         add_picture(doc, images, t)
+        row = [images[x] for x in t.get("pictures") or [] if images and x in images]
+        if row:  # пронумерованный ряд рисунков, по три в строке таблицы без рамок
+            grid = doc.add_table(rows=(len(row) + 2) // 3 * 2, cols=3)
+            for n, image in enumerate(row):
+                cell = grid.cell(n // 3 * 2, n % 3)
+                try:
+                    cell.paragraphs[0].add_run().add_picture(io.BytesIO(image), width=Cm(4.5))
+                except Exception:  # формат, который Word не берёт
+                    pass
+                grid.cell(n // 3 * 2 + 1, n % 3).text = str(n + 1)
         kind, items = t.get("kind"), [i for i in t.get("items", []) if i.strip()]
         if kind == "table":
             cells = lambda row: [c.strip() for c in row.split("|")]
@@ -261,7 +271,8 @@ def worksheet_docx(title, tasks, labels, images=None):
                                 x.bold = True
         elif kind == "questions":
             for n, q in enumerate(items, 1):
-                doc.add_paragraph(f"{n}. {nonum(q)}")
+                text = nonum(q) if nonum(q).strip("_ ") else ""  # пункт из одних «____»: хватит линии ниже
+                doc.add_paragraph(f"{n}. {text}")
                 doc.add_paragraph(line)
         elif kind == "writing":
             for q in items:

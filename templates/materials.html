@@ -23,6 +23,14 @@
     <button class="btn primary">{{ _('Отправить') }}</button>
   </form>
   <p class="muted small">{{ _('Можно приложить скриншот, фото страницы учебника, PDF или Word: кнопкой со скрепкой или вставкой скриншота в поле. Из учебника в PDF можно оставить только нужные страницы.') }}</p>
+  {% if books %}
+  <form class="book-take" id="bookTake">
+    <span>📚 {{ _('Из учебника') }}:</span>
+    <select id="bookId" aria-label="{{ _('Мои учебники') }}">{% for b in books %}<option value="{{ b.id }}">{{ b.name }} · {{ b.pages }} {{ _('стр.') }}</option>{% endfor %}</select>
+    <input id="bookPages" placeholder="{{ _('например 12-15, 20') }}" aria-label="{{ _('Страницы') }}" required>
+    <button class="btn small">{{ _('Взять страницы и рисунки') }}</button>
+  </form>
+  {% endif %}
 </section>
 <script>
 (() => {
@@ -96,6 +104,20 @@
     pending.push(...d.files); showPending(); input.focus()
   }
   picker.onchange = () => { attach([...picker.files]); picker.value = '' }
+  const take = $('bookTake')
+  if (take) take.onsubmit = async e => {  // страницы учебника и рисунки с них становятся вложениями разговора
+    e.preventDefault()
+    const go = take.querySelector('button')
+    go.disabled = true
+    let d = {error: broken}
+    try {
+      d = await (await fetch('/materials/books/' + $('bookId').value + '/take', {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pages: $('bookPages').value})})).json()
+    } catch {}
+    go.disabled = false
+    if (d.error) return bubble('error', d.error)
+    pending.push(...d.files); showPending(); $('bookPages').value = ''; input.focus()
+  }
   input.addEventListener('paste', e => {   // скриншот из буфера обмена: Cmd+V прямо в поле
     const shots = [...e.clipboardData.files].filter(f => f.type.startsWith('image/'))
     if (shots.length) { e.preventDefault(); attach(shots) }
@@ -135,6 +157,26 @@
   start()
 })()
 </script>
+{% endif %}
+
+{% if me and not me.readonly %}
+<details class="card fold" id="books">
+  <summary><h2>{{ _('Мои учебники') }}</h2>
+    <span class="muted small">{{ _('загрузите учебник в PDF один раз, потом помощник берёт из него страницы и рисунки') }}</span></summary>
+  <ul class="rules">
+    {% for b in books %}
+    <li><span class="grow">📚 {{ b.name }}</span><span class="muted small nowrap">{{ b.pages }} {{ _('стр.') }}</span>
+      <form method="post" action="/materials/books/{{ b.id }}/delete" onsubmit="return confirm('{{ _('Удалить учебник?') }}')">
+        <button class="btn-link danger" title="{{ _('Удалить') }}">✕</button></form></li>
+    {% else %}<li class="empty">{{ _('Учебников пока нет') }}</li>{% endfor %}
+  </ul>
+  <form class="rule-form" method="post" action="/materials/books" enctype="multipart/form-data">
+    <input name="name" placeholder="{{ _('Название учебника') }}">
+    <input type="file" name="file" accept=".pdf" required>
+    <button class="btn">{{ _('Загрузить') }}</button>
+  </form>
+</details>
+<script>if (location.hash === '#books') document.getElementById('books').open = true</script>
 {% endif %}
 
 <details class="card fold" {{ 'open' if error or not me or me.readonly or backend == 'none' }}>

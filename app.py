@@ -107,6 +107,13 @@ if (os.environ.get("DEMO") == "1" and not os.path.exists(DB)
     shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db"), DB)
 
 with sqlite3.connect(DB) as _c:
+    def _add(table, column, decl):
+        """Добавить колонку; если её уже добавил параллельный запуск (перезагрузка при правке кода), не падать."""
+        try:
+            _c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        except sqlite3.OperationalError as ex:
+            if "duplicate column" not in str(ex):
+                raise
     _c.execute("PRAGMA journal_mode=WAL")
     _c.executescript(SCHEMA)
     # ponytail: проверка идёт в потоке процесса и теряется при перезапуске; с несколькими воркерами нужна очередь
@@ -117,17 +124,17 @@ with sqlite3.connect(DB) as _c:
                          + f"INSERT INTO findings({_columns}) SELECT {_columns} FROM findings_old;"
                          + "DROP TABLE findings_old;")
     if "readonly" not in {r[1] for r in _c.execute("PRAGMA table_info(users)")}:
-        _c.execute("ALTER TABLE users ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0")
+        _add('users', 'readonly', 'INTEGER NOT NULL DEFAULT 0')
     for _col in ("verdict", "verdict_note"):  # решение модели о том, сам ли ученик писал работу
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
-            _c.execute(f"ALTER TABLE papers ADD COLUMN {_col} TEXT")
+            _add('papers', _col, 'TEXT')
     if "lang" not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
-        _c.execute("ALTER TABLE papers ADD COLUMN lang TEXT NOT NULL DEFAULT 'uk'")
+        _add('papers', 'lang', "TEXT NOT NULL DEFAULT 'uk'")
     if "rules_hash" not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
-        _c.execute("ALTER TABLE papers ADD COLUMN rules_hash TEXT NOT NULL DEFAULT ''")
+        _add('papers', 'rules_hash', "TEXT NOT NULL DEFAULT ''")
     for _table in ("papers", "requirements"):  # профили проверки появились 2026-09-29
         if "profile_id" not in {r[1] for r in _c.execute(f"PRAGMA table_info({_table})")}:
-            _c.execute(f"ALTER TABLE {_table} ADD COLUMN profile_id INTEGER REFERENCES profiles(id)")
+            _add(_table, 'profile_id', 'INTEGER REFERENCES profiles(id)')
     for _row in _c.execute("SELECT id FROM users WHERE id NOT IN (SELECT teacher_id FROM profiles)").fetchall():
         _new = _c.execute("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(?,?,'{}',?)",
                           (_row[0], "Исследовательская работа", time.time())).lastrowid
@@ -136,14 +143,16 @@ with sqlite3.connect(DB) as _c:
     # снимок правил проверки, решение учителя по баллам и авторству, список источников после ручной правки
     for _col, _default in (("rules", "''"), ("teacher", "'{}'"), ("sources_edit", "''")):
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(papers)")}:
-            _c.execute(f"ALTER TABLE papers ADD COLUMN {_col} TEXT NOT NULL DEFAULT {_default}")
+            _add('papers', _col, f'TEXT NOT NULL DEFAULT {_default}')
+    if "library" not in {r[1] for r in _c.execute("PRAGMA table_info(uploads)")}:  # учебник в библиотеке, 2026-10-08
+        _add('uploads', 'library', 'INTEGER NOT NULL DEFAULT 0')
     if "pages" not in {r[1] for r in _c.execute("PRAGMA table_info(uploads)")}:  # страницы PDF, 2026-10-06
-        _c.execute("ALTER TABLE uploads ADD COLUMN pages INTEGER NOT NULL DEFAULT 0")
+        _add('uploads', 'pages', 'INTEGER NOT NULL DEFAULT 0')
     # revise: просьба учителя переделать материал, prev_content: версия до неё, чтобы вернуть как было
     for _col, _type in (("canva_url", "TEXT NOT NULL DEFAULT ''"), ("canva_at", "REAL NOT NULL DEFAULT 0"),
                         ("revise", "TEXT NOT NULL DEFAULT ''"), ("prev_content", "TEXT NOT NULL DEFAULT ''")):
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(materials)")}:
-            _c.execute(f"ALTER TABLE materials ADD COLUMN {_col} {_type}")
+            _add('materials', _col, _type)
 
 # Оформление: что именно требует школа. Профиль проверки может поменять любое число.
 FORMAT_DEFAULTS = {
@@ -332,7 +341,10 @@ seconds (время на ответ: 20 для простых, 30 где над�
     « | », пустая ячейка — то, что заполняет ученик; можно дать начало слова («Ma istu____»);
   writing: свой текст; lines — сколько линий для текста; items — опорные вопросы или пусто;
 - score: баллы за задание; answers: ответы для учителя по пунктам (для writing — на что смотреть);
-- lines: только для writing, иначе 0; header и rows пустые, если kind не table.
+- lines: только для writing, иначе 0; header и rows пустые, если kind не table;
+- pictures: id картинок учителя для задания по порядку (подписать, что на рисунках; назвать предметы; описать
+  картинку) — на листе они идут пронумерованным рядом, пункты items отвечают им по номерам; пусто, если не нужны.
+  Рисунки со страниц учебника тоже картинки учителя: если задание строится на картинках, бери их.
 
 Только то, что можно сделать ручкой на бумаге: без аудирования, без картинок, которых нет, без выбора из
 вариантов, если его нет в образцах. Никаких таблиц из символов, markdown и ``` — таблица только через kind table.""",
@@ -340,7 +352,7 @@ seconds (время на ответ: 20 для простых, 30 где над�
                    "tasks": {"type": "array", "items": {
                        "type": "object", "additionalProperties": False,
                        "required": ["variant", "title", "instruction", "kind", "items", "header", "rows", "lines",
-                                    "score", "answers"],
+                                    "score", "answers", "pictures"],
                        "properties": {"variant": {"type": "string"}, "title": {"type": "string"},
                                       "instruction": {"type": "string"},
                                       "kind": {"type": "string", "enum": ["questions", "gaps", "table", "writing"]},
@@ -348,7 +360,8 @@ seconds (время на ответ: 20 для простых, 30 где над�
                                       "header": {"type": "string"},
                                       "rows": {"type": "array", "items": {"type": "string"}},
                                       "lines": {"type": "integer"}, "score": {"type": "integer"},
-                                      "answers": {"type": "array", "items": {"type": "string"}}}}}},
+                                      "answers": {"type": "array", "items": {"type": "string"}},
+                                      "pictures": {"type": "array", "items": {"type": "integer"}}}}}},
     },
     "ideas": {
         "name": "Идеи интерактивных заданий",
@@ -834,7 +847,7 @@ def ranges(pages):
             out.append(f"{start}–{prev}" if prev != start else str(start))
             start = n
     return ", ".join(out)
-UPLOADS_PER_CHAT = 5
+UPLOADS_PER_CHAT = 16    # страницы учебника и до 12 рисунков с них помещаются целиком
 
 
 def sniff(data, name):
@@ -1039,6 +1052,8 @@ def make_material(mid):
         for item in result.get(MATERIAL_FIELDS[m["kind"]][0]) or []:  # только картинки этого материала
             if isinstance(item, dict):
                 item["image"] = item.get("image") if item.get("image") in pictures else 0
+                if "pictures" in item:  # ряд картинок задания рабочего листа: только свои, без повторов
+                    item["pictures"] = list(dict.fromkeys(x for x in item["pictures"] if x in pictures))
         con.execute("UPDATE materials SET status='done', content=?, note='', revise='', prev_content=? WHERE id=?",
                     (json.dumps(result, ensure_ascii=False), m["content"] if m["revise"] else "", mid))
     except Exception as ex:  # фоновый поток: ошибка должна стать статусом, иначе материал зависнет
@@ -1088,9 +1103,9 @@ def purge_old(con):
         old = time.time() - RETENTION_DAYS * 86400
         con.execute("DELETE FROM findings WHERE paper_id IN (SELECT id FROM papers WHERE uploaded_at < ?)", (old,))
         con.execute("DELETE FROM papers WHERE uploaded_at < ?", (old,))
-        con.execute("DELETE FROM uploads WHERE created_at < ?", (old,))
+        con.execute("DELETE FROM uploads WHERE created_at < ? AND library=0", (old,))
     # приложения, которые так и не попали в материал (разговор бросили), держим сутки
-    con.execute("DELETE FROM uploads WHERE material_id IS NULL AND created_at < ?", (time.time() - 86400,))
+    con.execute("DELETE FROM uploads WHERE material_id IS NULL AND library=0 AND created_at < ?", (time.time() - 86400,))
 
 
 def ai_error_text(ex):
@@ -1656,7 +1671,9 @@ def materials_home(me):
         WHERE teacher_id=? ORDER BY id DESC LIMIT 100""", me["id"])
     for r in rows:
         r["name"] = MATERIALS[r["kind"]]["name"] if r["kind"] in MATERIALS else r["kind"]
-    return {"materials": rows, "kinds": [(k, v["name"]) for k, v in MATERIALS.items()], "backend": backend(me["id"])}
+    books = q("SELECT id, name, pages FROM uploads WHERE teacher_id=? AND library=1 ORDER BY name", me["id"])
+    return {"materials": rows, "kinds": [(k, v["name"]) for k, v in MATERIALS.items()], "backend": backend(me["id"]),
+            "books": books}
 
 
 @view("/materials", method="POST")
@@ -1783,6 +1800,87 @@ def save_upload(me, f, material_id=None, max_pages=None, only_images=False):
     fid = run("INSERT INTO uploads(teacher_id,material_id,name,mime,data,pages,created_at) VALUES(?,?,?,?,?,?,?)",
               me["id"], material_id, name, mime, data, pages, time.time()).lastrowid
     return {"id": fid, "name": name, "pages": pages}
+
+
+# ---------- учебники: загружаются один раз, потом из них берутся страницы и рисунки ----------
+
+PICTURES_PER_TAKE = 12   # рисунков со страниц за раз, остальное — мелкие значки и украшения
+PICTURE_MIN = 150        # меньше этого по стороне — значок, а не рисунок
+
+
+@view("/materials/books", method="POST")
+def add_book(me):
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return done("/materials#books")
+    saved = save_upload(me, f)
+    if "error" in saved or not saved.get("pages"):
+        return {"error": saved.get("error") or translate("Нужен учебник в PDF", lang())}, 400
+    name = str(body().get("name") or "").strip()[:120] or saved["name"]
+    run("UPDATE uploads SET library=1, name=? WHERE id=? AND teacher_id=?", name, saved["id"], me["id"])
+    return done("/materials#books", id=saved["id"])
+
+
+@view("/materials/books/<int:fid>/delete", method="POST")
+def delete_book(me, fid):
+    run("DELETE FROM uploads WHERE id=? AND teacher_id=? AND library=1", fid, me["id"])
+    return done("/materials#books")
+
+
+def page_pictures(data, pages):
+    """Рисунки, вставленные в выбранные страницы PDF, как PNG: (номер страницы, байты). У скана это вся страница."""
+    from PIL import Image
+    reader = pdf_read.PdfReader(io.BytesIO(data))
+    if reader.is_encrypted:
+        reader.decrypt("")
+    out, seen = [], set()
+    for n in pages:
+        try:
+            images = reader.pages[n - 1].images
+            for img in images:
+                pic = img.image
+                if pic.width < PICTURE_MIN or pic.height < PICTURE_MIN:
+                    continue
+                if pic.mode not in ("RGB", "RGBA", "L"):
+                    pic = pic.convert("RGB")
+                if max(pic.size) > 1600:  # модели и слайду хватает, база не пухнет
+                    pic.thumbnail((1600, 1600), Image.LANCZOS)
+                buf = io.BytesIO()
+                pic.save(buf, "PNG", optimize=True)
+                key = hashlib.sha256(buf.getvalue()).hexdigest()
+                if key not in seen:  # одна и та же картинка на нескольких страницах
+                    seen.add(key)
+                    out.append((n, buf.getvalue()))
+                if len(out) >= PICTURES_PER_TAKE:
+                    return out
+        except Exception:  # непонятный формат картинки не должен ломать всю выдачу
+            continue
+    return out
+
+
+@view("/materials/books/<int:fid>/take", method="POST")
+def take_from_book(me, fid):
+    """Страницы учебника и рисунки с них — во вложения разговора с помощником."""
+    book = q1("SELECT id, name, data, pages FROM uploads WHERE id=? AND teacher_id=? AND library=1", fid, me["id"]) or abort(404)
+    pages = parse_pages(str(body().get("pages") or ""), book["pages"])
+    if not pages or len(pages) > PDF_SEND_PAGES:
+        return {"error": translate("Не понял страницы: напишите, например, 12-15, 20", lang())}, 400
+    if not used(f"upload:{me['id']}", 3600, 60):
+        return {"error": translate("Слишком много файлов за час, попробуйте позже", lang())}, 429
+    out = []
+    piece = cut_pdf(book["data"], pages)
+    name = f"{book['name']} (с. {ranges(pages)})"[:160]
+    fid_pdf = run("INSERT INTO uploads(teacher_id,name,mime,data,pages,created_at) VALUES(?,?,?,?,?,?)",
+                  me["id"], name, "application/pdf", piece, len(pages), time.time()).lastrowid
+    out.append({"id": fid_pdf, "name": name, "pages": len(pages)})
+    counter = {}
+    for page, png in page_pictures(book["data"], pages):
+        counter[page] = counter.get(page, 0) + 1
+        label = f"{book['name']}, с. {page}, {translate('рис.', lang())} {counter[page]}"[:160]
+        pid = run("INSERT INTO uploads(teacher_id,name,mime,data,pages,created_at) VALUES(?,?,?,?,0,?)",
+                  me["id"], label, "image/png", png, time.time()).lastrowid
+        out.append({"id": pid, "name": label, "pages": 0})
+    return {"files": out}
 
 
 @view("/materials/files/<int:fid>/pages", method="POST")
@@ -1947,7 +2045,7 @@ MATERIAL_FIELDS = {
     "kahoot": ("questions", [("question", "text"), ("answers", "lines"), ("correct", "number"), ("seconds", "number")]),
     "worksheet": ("tasks", [("variant", "line"), ("title", "line"), ("instruction", "text"), ("kind", "wkind"),
                             ("items", "lines"), ("header", "line"), ("rows", "lines"), ("lines", "number"),
-                            ("score", "number"), ("answers", "lines")]),
+                            ("score", "number"), ("answers", "lines"), ("pictures", "ids")]),
     "ideas": ("ideas", [("title", "line"), ("what", "text"), ("needs", "line"),
                         ("minutes", "number"), ("assess", "text")]),
 }
@@ -1979,6 +2077,8 @@ def edit_material(me, mid):
                 item[name] = [line.strip() for line in raw.split("\n") if line.strip()]
             elif kind == "number":
                 item[name] = int(re.sub(r"\D", "", raw) or 0)
+            elif kind == "ids":  # ряд картинок: только картинки этого материала
+                item[name] = [int(x) for x in re.findall(r"\d+", raw) if int(x) in pictures]
             else:
                 item[name] = raw[:2000]
         picture = as_int(d, f"{i}-image", 0)

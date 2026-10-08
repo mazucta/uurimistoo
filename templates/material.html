@@ -79,6 +79,8 @@
         {% for value, label in [('easy', _('лёгкий')), ('medium', _('средний')), ('hard', _('трудный'))] %}
         <option value="{{ value }}" {{ 'selected' if item[name] == value }}>{{ label }}</option>{% endfor %}
       </select>
+      {% elif kind == 'ids' %}<input type="hidden" name="{{ idx }}-{{ name }}" value="{{ (item[name] or [])|join(',') }}">
+        <span class="thumbs">{% for x in item[name] or [] %}<img class="thumb" src="/materials/{{ m.id }}/images/{{ x }}" alt="">{% else %}<span class="muted small">—</span>{% endfor %}</span>
       {% elif kind == 'wkind' %}<select name="{{ idx }}-{{ name }}">
         {% for value, label in [('questions', _('вопросы с линиями для ответа')), ('gaps', _('пропуски в тексте')),
                                 ('table', _('таблица для заполнения')), ('writing', _('свой текст'))] %}
@@ -224,6 +226,8 @@
     <h4>{{ t.title }}{% if t.score %} <span class="muted small">({{ t.score }} {{ _('балл.') }})</span>{% endif %}</h4>
     {% if t.instruction %}<p class="sheet-hint">{{ t.instruction }}</p>{% endif %}
     {% if t.image %}<img class="mat-img" src="/materials/{{ m.id }}/images/{{ t.image }}" alt="">{% endif %}
+    {% if t.pictures %}<div class="sheet-pics">{% for x in t.pictures %}
+      <figure><img src="/materials/{{ m.id }}/images/{{ x }}" alt=""><figcaption>{{ loop.index }}</figcaption></figure>{% endfor %}</div>{% endif %}
     {% if t.kind == 'table' %}
     {% set head = (t.header or '').split('|') %}
     <div class="scroll"><table class="sheet-table">
@@ -233,7 +237,7 @@
       {% endfor %}
     </table></div>
     {% elif t.kind == 'questions' %}
-    <ol class="sheet-lines">{% for q in t['items'] if q.strip() %}<li>{{ q|nonum }}<span class="answer-line"></span></li>{% endfor %}</ol>
+    <ol class="sheet-lines">{% for q in t['items'] if q.strip() %}<li>{{ q|nonum if (q|nonum).strip('_ ') }}<span class="answer-line"></span></li>{% endfor %}</ol>
     {% elif t.kind == 'writing' %}
     {% for q in t['items'] if q.strip() %}<p>{{ q }}</p>{% endfor %}
     {% for _n in range([[t.lines or 8, 1]|max, 30]|min) %}<span class="answer-line"></span>{% endfor %}
