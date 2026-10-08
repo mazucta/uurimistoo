@@ -30,6 +30,8 @@
   <div class="card-head"><h2>{{ _('Попросить помощника') }}</h2>
     <span class="muted small">{{ _('опишите, что изменить, и помощник переделает материал; ваши ручные правки он сохранит') }}</span></div>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <label class="field ask-kind"><span>{{ _('Вид материала') }}</span>
+    <select name="kind">{% for key, name in kinds %}<option value="{{ key }}" {{ 'selected' if key == m.kind }}>{{ _(name) }}</option>{% endfor %}</select></label>
   <textarea name="request" rows="3" maxlength="1000" required
     placeholder="{{ _('Например: сделай вопросы проще, добавь слайд про примеры из жизни, убери термины на английском') }}">{{ wish or '' }}</textarea>
   <label class="field ask-files"><span>{{ _('Примеры к просьбе: скриншот, задание или страница учебника (можно вставить скриншот в поле выше)') }}</span>

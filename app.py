@@ -146,6 +146,8 @@ with sqlite3.connect(DB) as _c:
             _add('papers', _col, f'TEXT NOT NULL DEFAULT {_default}')
     if "library" not in {r[1] for r in _c.execute("PRAGMA table_info(uploads)")}:  # учебник в библиотеке, 2026-10-08
         _add('uploads', 'library', 'INTEGER NOT NULL DEFAULT 0')
+    if "parent" not in {r[1] for r in _c.execute("PRAGMA table_info(uploads)")}:  # рисунок из этого PDF, 2026-10-09
+        _add('uploads', 'parent', 'INTEGER NOT NULL DEFAULT 0')
     if "pages" not in {r[1] for r in _c.execute("PRAGMA table_info(uploads)")}:  # страницы PDF, 2026-10-06
         _add('uploads', 'pages', 'INTEGER NOT NULL DEFAULT 0')
     # revise: просьба учителя переделать материал, prev_content: версия до неё, чтобы вернуть как было
@@ -1011,6 +1013,27 @@ def run_ai(pid):
 
 # ---------- материалы к уроку ----------
 
+PDF_PICTURES = 24  # рисунков из PDF материала: модель вставляет картинки только по id, из PDF их не взять
+
+
+def pictures_from_pdfs(con, m):
+    """Рисунки, вставленные в PDF материала (учебник, тетрадь), становятся отдельными картинками с id.
+    Без этого модель видит рисунок на странице, но вставить его не может и начинает рисовать символами."""
+    done_pdfs = {r[0] for r in con.execute("SELECT DISTINCT parent FROM uploads WHERE material_id=? AND parent>0", (m["id"],))}
+    for pdf in con.execute("SELECT id, name, data, pages FROM uploads WHERE material_id=? AND mime='application/pdf'",
+                           (m["id"],)).fetchall():
+        if pdf["id"] in done_pdfs or pdf["pages"] > PDF_SEND_PAGES:
+            continue
+        counter, base = {}, re.sub(r" [(]с[.] [^)]*[)]$", "", pdf["name"])
+        for page, png in page_pictures(pdf["data"], list(range(1, pdf["pages"] + 1)), limit=PDF_PICTURES):
+            counter[page] = counter.get(page, 0) + 1
+            con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,pages,parent,created_at) "
+                        "VALUES(?,?,?,?,?,0,?,?)", (m["teacher_id"], m["id"],
+                        f"{base}, с. {page}, {translate('рис.', m['lang'])} {counter[page]}"[:160],
+                        "image/png", png, pdf["id"], time.time()))
+        con.commit()
+
+
 def make_material(mid):
     """Готовим материал в фоне: учителю не нужно ждать ответа страницей."""
     con = sqlite3.connect(DB)
@@ -1025,10 +1048,15 @@ def make_material(mid):
                   + "\n\nПоле image у каждого пункта: если среди приложенных картинок учителя есть подходящая "
                     "к этому пункту, поставь её id (он написан перед картинкой), иначе 0. Не выдумывай id, "
                     "одну картинку ставь к одному пункту."
+                  + "\n\nНе рисуй символами: никаких часов, схем, таблиц и картинок из знаков, никаких ``` и "
+                    "markdown. Картинка в материале — только картинка учителя по её id (поле image, у рабочего "
+                    "листа ещё pictures). Если подходящей картинки нет, построй задание без неё: например, время "
+                    "цифрами «7.30» вместо нарисованных часов. Таблица — только в рабочем листе (kind table)."
                   + f"\n\nПиши {speak}. Исключение: урок языка или образцы заданий на другом языке — тогда "
                     "сами задания на том языке, что в образцах или что просит учитель.")
         content = (f"<тема>\n{m['topic']}\n</тема>\n<класс>\n{m['grade'] or 'гимназия'}\n</класс>"
                    + (f"\n<пожелания учителя>\n{m['extra']}\n</пожелания учителя>" if m["extra"] else ""))
+        pictures_from_pdfs(con, m)
         files = con.execute("SELECT id, name, mime, data FROM uploads WHERE material_id=? ORDER BY id", (mid,)).fetchall()
         if files:
             content += ("\n\nК запросу приложены материалы учителя (выше). Опирайся на них: бери из них факты, "
@@ -1827,7 +1855,7 @@ def delete_book(me, fid):
     return done("/materials#books")
 
 
-def page_pictures(data, pages):
+def page_pictures(data, pages, limit=None):
     """Рисунки, вставленные в выбранные страницы PDF, как PNG: (номер страницы, байты). У скана это вся страница."""
     from PIL import Image
     reader = pdf_read.PdfReader(io.BytesIO(data))
@@ -1851,7 +1879,7 @@ def page_pictures(data, pages):
                 if key not in seen:  # одна и та же картинка на нескольких страницах
                     seen.add(key)
                     out.append((n, buf.getvalue()))
-                if len(out) >= PICTURES_PER_TAKE:
+                if len(out) >= (limit or PICTURES_PER_TAKE):
                     return out
         except Exception:  # непонятный формат картинки не должен ломать всю выдачу
             continue
@@ -1877,8 +1905,8 @@ def take_from_book(me, fid):
     for page, png in page_pictures(book["data"], pages):
         counter[page] = counter.get(page, 0) + 1
         label = f"{book['name']}, с. {page}, {translate('рис.', lang())} {counter[page]}"[:160]
-        pid = run("INSERT INTO uploads(teacher_id,name,mime,data,pages,created_at) VALUES(?,?,?,?,0,?)",
-                  me["id"], label, "image/png", png, time.time()).lastrowid
+        pid = run("INSERT INTO uploads(teacher_id,name,mime,data,pages,parent,created_at) VALUES(?,?,?,?,0,?,?)",
+                  me["id"], label, "image/png", png, fid_pdf, time.time()).lastrowid
         out.append({"id": pid, "name": label, "pages": 0})
     return {"files": out}
 
@@ -1914,6 +1942,7 @@ def material(me, mid):
         "SELECT 1 AS x FROM canva_tokens WHERE user_id=?", me["id"]) else "connect"
     fresh = m["canva_url"] and m["canva_at"] > time.time() - 29 * 86400  # ссылка Canva живёт 30 дней
     return {"m": m, "key": key, "fields": fields, "items": items, "canva": canva,
+            "kinds": [(k, v["name"]) for k, v in MATERIALS.items()],
             "canva_url": m["canva_url"] if fresh else "", "canva_error": request.args.get("canva"),
             "edit": request.args.get("edit") is not None}
 
@@ -2160,6 +2189,11 @@ def revise_material(me, mid):
             page = material(me, mid)
             return render_template("material.html", me=me, **{**page, "edit": True, "error": saved["error"],
                                                               "wish": wish}), 400
+    kind = body().get("kind")
+    if kind in MATERIALS and kind != q1("SELECT kind FROM materials WHERE id=?", mid)["kind"]:
+        # например, старые «проверочные вопросы» в рабочий лист: только в нём есть таблицы и ряды рисунков
+        wish = f"Сделай из этого материала другой вид: {MATERIALS[kind]['name']}. {wish}"
+        run("UPDATE materials SET kind=? WHERE id=?", kind, mid)
     # язык не трогаем: переделка не должна молча перевести материал на язык, выбранный в интерфейсе сейчас
     run("UPDATE materials SET revise=? WHERE id=?", wish, mid)
     start_material(mid, me["id"])

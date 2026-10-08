@@ -351,6 +351,29 @@ ok("учебник: страницы и рисунки становятся вл
    took["files"][0]["name"] == "Біологія 7 (с. 2–3)" and took["files"][0]["pages"] == 2
    and len(took["files"]) == 2 and "с. 2" in took["files"][1]["name"] and alien_take == 404, repr(took))
 
+# PDF материала: рисунки из него достаются отдельными картинками один раз; переделка меняет вид материала
+con = sqlite3.connect(DB)
+with_pdf = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'quiz','Kell','done',?,1)",
+                       ('{"title": "Kell", "questions": []}',)).lastrowid
+con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,pages,created_at) VALUES(1,?,'Tööraamat.pdf','application/pdf',?,3,1)",
+            (with_pdf, _buf.getvalue()))
+con.execute("DELETE FROM limits"); con.commit()
+c.post(f"/api/materials/{with_pdf}/revise", headers=H, json={"request": "встав малюнки з підручника", "kind": "worksheet"})
+got = {}
+def sheet_maker(system, content, schema, **k):
+    got["files"] = [f["name"] for f in k.get("files") or []]
+    got["system"] = system
+    return {"title": "Kell", "tasks": []}
+A.ask_claude = sheet_maker
+A.make_material(with_pdf); A.make_material(with_pdf)  # второй раз рисунки не дублируются
+pics = con.execute("SELECT COUNT(*) FROM uploads WHERE material_id=? AND parent>0", (with_pdf,)).fetchone()[0]
+kind_now = con.execute("SELECT kind FROM materials WHERE id=?", (with_pdf,)).fetchone()[0]
+con.close()
+ok("PDF материала: рисунки достаются один раз и уходят в модель отдельными картинками",
+   pics == 1 and any(", с. 1," in n for n in got["files"]), f"{pics} {got.get('files')}")
+ok("переделка: вид меняется на рабочий лист, рисовать символами запрещено",
+   kind_now == "worksheet" and "Не рисуй символами" in got["system"], kind_now)
+
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))

@@ -396,3 +396,5 @@ details.edit textarea { margin: 8px 0 0; font-size: 13px; }
 .sheet-pics figcaption { font-weight: 600; margin-top: 4px; }
 .thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
 .thumbs .thumb { max-width: 90px; max-height: 70px; }
+.ask-kind { margin: 0; }
+.ask-kind select { width: auto; }
