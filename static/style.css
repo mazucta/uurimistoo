@@ -370,3 +370,20 @@ details.edit textarea { margin: 8px 0 0; font-size: 13px; }
 .paste-zone { display: grid; gap: 6px; justify-items: start; padding: 10px 12px; border: 2px dashed var(--blue-line); border-radius: 10px; background: var(--soft); cursor: text; }
 .paste-zone:focus-within, .paste-zone:focus { border-color: var(--blue); outline: none; }
 .paste-zone input { padding: 0; border: 0; background: none; }
+
+/* рабочий лист: как на бумаге */
+.sheet { padding: 28px 36px; }
+.sheet-title { text-align: center; font-size: 22px; margin-bottom: 18px; }
+.sheet-variant { text-align: center; margin: 26px 0 8px; padding-top: 18px; border-top: 2px solid var(--line); }
+.sheet-task { margin: 22px 0; }
+.sheet-task h4 { margin: 0 0 6px; font-size: 16px; }
+.sheet-hint { margin: 0 0 10px; font-style: italic; color: var(--muted); }
+.sheet-table { border-collapse: collapse; width: 100%; font-size: 15px; }
+.sheet-table th, .sheet-table td { border: 1px solid var(--ink); padding: 6px 10px; text-align: left; height: 34px; }
+.sheet-table th { background: var(--soft); }
+.sheet-lines { padding-left: 22px; }
+.sheet-lines li { margin-bottom: 6px; }
+.answer-line { display: block; height: 28px; border-bottom: 1px solid var(--muted); }
+.sheet-gaps li { margin-bottom: 10px; line-height: 1.8; }
+.sheet-key { margin-top: 24px; font-size: 14px; }
+@media print { .sheet-key { display: none; } .sheet { border: 0; padding: 0; } }

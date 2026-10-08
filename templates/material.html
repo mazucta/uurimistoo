@@ -79,6 +79,11 @@
         {% for value, label in [('easy', _('лёгкий')), ('medium', _('средний')), ('hard', _('трудный'))] %}
         <option value="{{ value }}" {{ 'selected' if item[name] == value }}>{{ label }}</option>{% endfor %}
       </select>
+      {% elif kind == 'wkind' %}<select name="{{ idx }}-{{ name }}">
+        {% for value, label in [('questions', _('вопросы с линиями для ответа')), ('gaps', _('пропуски в тексте')),
+                                ('table', _('таблица для заполнения')), ('writing', _('свой текст'))] %}
+        <option value="{{ value }}" {{ 'selected' if item[name] == value }}>{{ label }}</option>{% endfor %}
+      </select>
       {% elif kind == 'kind' %}<select name="{{ idx }}-{{ name }}">
         {% for value, label in [('choice', _('выбор')), ('short', _('короткий ответ')), ('open', _('развёрнутый ответ'))] %}
         <option value="{{ value }}" {{ 'selected' if item[name] == value }}>{{ label }}</option>{% endfor %}
@@ -207,6 +212,39 @@
     </li>
     {% endfor %}
   </ol>
+</section>
+{% endif %}
+
+{% if m.kind == 'worksheet' %}
+<section class="card sheet">
+  <h2 class="sheet-title">{{ m.data.title or m.topic }}</h2>
+  {% for t in items %}
+  {% if t.variant and loop.changed(t.variant) %}<h3 class="sheet-variant">{{ t.variant }}</h3>{% endif %}
+  <div class="sheet-task">
+    <h4>{{ t.title }}{% if t.score %} <span class="muted small">({{ t.score }} {{ _('балл.') }})</span>{% endif %}</h4>
+    {% if t.instruction %}<p class="sheet-hint">{{ t.instruction }}</p>{% endif %}
+    {% if t.image %}<img class="mat-img" src="/materials/{{ m.id }}/images/{{ t.image }}" alt="">{% endif %}
+    {% if t.kind == 'table' %}
+    {% set head = (t.header or '').split('|') %}
+    <div class="scroll"><table class="sheet-table">
+      <tr>{% for c in head %}<th>{{ c.strip() }}</th>{% endfor %}</tr>
+      {% for r in t.rows if r.strip() %}{% set cells = r.split('|') %}
+      <tr>{% for c in range([head|length, cells|length]|max) %}<td>{{ cells[c].strip() if c < cells|length }}</td>{% endfor %}</tr>
+      {% endfor %}
+    </table></div>
+    {% elif t.kind == 'questions' %}
+    <ol class="sheet-lines">{% for q in t['items'] if q.strip() %}<li>{{ q|nonum }}<span class="answer-line"></span></li>{% endfor %}</ol>
+    {% elif t.kind == 'writing' %}
+    {% for q in t['items'] if q.strip() %}<p>{{ q }}</p>{% endfor %}
+    {% for _n in range([[t.lines or 8, 1]|max, 30]|min) %}<span class="answer-line"></span>{% endfor %}
+    {% else %}
+    <ol class="sheet-gaps">{% for q in t['items'] if q.strip() %}<li>{{ q|nonum }}</li>{% endfor %}</ol>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% set keys = items|selectattr('answers')|list %}
+  {% if keys %}<details class="sheet-key"><summary>{{ _('Ответы для учителя') }}</summary>
+    <ul>{% for t in keys %}<li><b>{{ t.variant }} {{ t.title }}:</b> {{ t.answers|join('; ') }}</li>{% endfor %}</ul></details>{% endif %}
 </section>
 {% endif %}
 

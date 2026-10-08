@@ -301,6 +301,21 @@ ok("картинки: чужой учитель картинку не получ
 deck = c.get(f"/api/materials/{pic_mid}/file", headers=H).data
 ok("картинки: в презентации .pptx есть картинки", any(n.startswith("ppt/media/") for n in _zip.ZipFile(_io.BytesIO(deck)).namelist()))
 
+# Рабочий лист: страница открывается, таблица настоящая, номера не двоятся, Word собирается
+con = sqlite3.connect(DB)
+ws = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'worksheet','A1','done',?,1)",
+                 (__import__("json").dumps({"title": "Kontrolltöö", "tasks": [
+                     {"variant": "I variant", "title": "1. KÜSIMUSED", "kind": "questions", "items": ["1. Mis sinu nimi on?"],
+                      "header": "", "rows": [], "lines": 0, "score": 2, "answers": ["nimi"], "image": 0},
+                     {"variant": "I variant", "title": "2. TEGUSÕNAD", "kind": "table", "items": [], "header": "ISTUMA | MAGAMA",
+                      "rows": ["Ma istu____ | "], "lines": 0, "score": 4, "answers": [], "image": 0}]}),)).lastrowid
+con.commit(); con.close()
+page = c.get(f"/materials/{ws}", headers=H)
+html = page.get_data(as_text=True)
+ok("рабочий лист: страница с таблицей и линиями, без «1. 1.»", page.status_code == 200 and "sheet-table" in html
+   and "answer-line" in html and "Ma istu____" in html and ">1. Mis" not in html, f"код {page.status_code}")
+ok("рабочий лист: выгружается в Word", c.get(f"/api/materials/{ws}/file", headers=H).data[:2] == b"PK")
+
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))

@@ -198,6 +198,11 @@ def xlsx(rows):
     return out.getvalue()
 
 
+def nonum(text):
+    """Без номера в начале строки: нумерацию ставит сам лист, иначе выходит «1. 1. Tere»."""
+    return re.sub(r"^\s*\d{1,3}[.)]\s+", "", text)
+
+
 KAHOOT_TIMES = (5, 10, 20, 30, 60, 90, 120, 240)   # другие значения Kahoot не принимает
 
 
@@ -218,8 +223,70 @@ def kahoot_xlsx(questions):
     return xlsx(rows)
 
 
+def worksheet_docx(title, tasks, labels, images=None):
+    """Рабочий лист для печати: варианты с новой страницы, настоящие таблицы и линии, ответы учителю в конце."""
+    doc = start_doc(title)
+    line = "_" * 64
+    variant = None
+    for t in tasks:
+        if t.get("variant") and t["variant"] != variant:
+            if variant is not None:
+                doc.add_page_break()
+            variant = t["variant"]
+            head = doc.add_paragraph()
+            head.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            head.add_run(variant).bold = True
+        para = doc.add_paragraph()
+        para.paragraph_format.space_before = Pt(12)
+        run = para.add_run(t.get("title", ""))
+        run.bold = True
+        if t.get("score"):
+            para.add_run(f"   ({t['score']} {labels['score']})").font.size = Pt(10)
+        if t.get("instruction"):
+            doc.add_paragraph().add_run(t["instruction"]).italic = True
+        add_picture(doc, images, t)
+        kind, items = t.get("kind"), [i for i in t.get("items", []) if i.strip()]
+        if kind == "table":
+            cells = lambda row: [c.strip() for c in row.split("|")]
+            header, rows = cells(t.get("header", "")), [cells(r) for r in t.get("rows", []) if r.strip()]
+            width = max([len(header)] + [len(r) for r in rows])
+            table = doc.add_table(rows=1 + len(rows), cols=width)
+            table.style = "Table Grid"
+            for r, row in enumerate([header] + rows):
+                for c in range(width):
+                    table.cell(r, c).text = row[c] if c < len(row) else ""
+                    if r == 0:
+                        for p in table.cell(r, c).paragraphs:
+                            for x in p.runs:
+                                x.bold = True
+        elif kind == "questions":
+            for n, q in enumerate(items, 1):
+                doc.add_paragraph(f"{n}. {nonum(q)}")
+                doc.add_paragraph(line)
+        elif kind == "writing":
+            for q in items:
+                doc.add_paragraph(q)
+            for _ in range(max(1, min(int(t.get("lines") or 8), 30))):
+                doc.add_paragraph(line)
+        else:  # gaps: строки с пропусками как есть
+            for n, q in enumerate(items, 1):
+                doc.add_paragraph(f"{n}. {nonum(q)}")
+    keys = [t for t in tasks if t.get("answers")]
+    if keys:
+        doc.add_page_break()
+        doc.add_paragraph().add_run(labels["answers"]).bold = True
+        for t in keys:
+            doc.add_paragraph(" ".join(filter(None, (t.get("variant"), t.get("title")))) + ": " + "; ".join(t["answers"]))
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
 def build(kind, title, data, labels, images=None):
     """Файл материала: имя файла, тип и содержимое."""
+    if kind == "worksheet":
+        return "docx", ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        worksheet_docx(title, data.get("tasks", []), labels, images))
     if kind == "kahoot":
         return "xlsx", ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         kahoot_xlsx(data.get("questions", [])))
@@ -255,4 +322,13 @@ if __name__ == "__main__":
     assert sheet.count("<row") == 2, sheet                  # вопрос с одним ответом пропущен
     assert "&lt;это&gt; &amp;" in sheet and "б" * 75 + "<" in sheet and "б" * 76 not in sheet
     assert '<c r="F2"><v>30</v></c>' in sheet and '<c r="G2"><v>3</v></c>' in sheet, sheet  # время к 30, ответ в пределах
+    sheet = worksheet_docx("Kontrolltöö", [
+        {"variant": "I variant", "title": "1. KÜSIMUSED", "kind": "questions", "items": ["Mis sinu nimi on?"], "score": 2},
+        {"variant": "I variant", "title": "2. TEGUSÕNAD", "kind": "table", "header": "ISTUMA | MAGAMA",
+         "rows": ["Ma istu____ | ", "Sa | "], "answers": ["istun, magan"]},
+        {"variant": "II variant", "title": "1. KIRJUTA", "kind": "writing", "items": ["Mina"], "lines": 3}],
+        {**labels, "score": "p"})
+    with zipfile.ZipFile(io.BytesIO(sheet)) as z:
+        body = z.read("word/document.xml").decode()
+    assert body.count("<w:tbl>") == 1 and "Ma istu____" in body and "II variant" in body and "istun, magan" in body
     print("ok")
