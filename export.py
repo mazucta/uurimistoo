@@ -17,7 +17,12 @@ FONT = "Times New Roman"
 SLIDE_FONT = "Arial"
 
 
-def slides_pptx(title, slides, labels):
+def picture(images, item):
+    """Картинка пункта из словаря {id: байты} или None."""
+    return images.get(item.get("image")) if images and isinstance(item, dict) else None
+
+
+def slides_pptx(title, slides, labels, images=None):
     """Презентация: титул, потом по слайду на пункт. Заметки учителя уходят в notes."""
     deck = Presentation()
     deck.slide_width, deck.slide_height = PCm(33.87), PCm(19.05)   # 16:9
@@ -46,6 +51,17 @@ def slides_pptx(title, slides, labels):
             para.font.name = SLIDE_FONT
         if item.get("notes"):
             slide.notes_slide.notes_text_frame.text = item["notes"]
+        image = picture(images, item)
+        if image:  # текст слева, картинка справа, пропорции сохраняются
+            holder = slide.placeholders[1]
+            holder.width = int(deck.slide_width * 0.52) - holder.left
+            try:
+                pic = slide.shapes.add_picture(io.BytesIO(image), int(deck.slide_width * 0.55), PCm(4.5), height=PCm(12.5))
+            except Exception:  # формат, который PowerPoint не берёт (например webp): слайд без картинки
+                continue
+            box = int(deck.slide_width * 0.42)
+            if pic.width > box:
+                pic.height, pic.width = int(pic.height * box / pic.width), box
 
     out = io.BytesIO()
     deck.save(out)
@@ -68,7 +84,16 @@ def start_doc(title):
     return doc
 
 
-def quiz_docx(title, questions, labels):
+def add_picture(doc, images, item):
+    image = picture(images, item)
+    if image:
+        try:
+            doc.add_picture(io.BytesIO(image), width=Cm(10))
+        except Exception:  # формат, который Word не берёт: без картинки
+            pass
+
+
+def quiz_docx(title, questions, labels, images=None):
     """Вопросы для класса, ответы для учителя отдельным разделом в конце."""
     doc = start_doc(title)
     letters = "ABCDEFGH"
@@ -79,6 +104,7 @@ def quiz_docx(title, questions, labels):
         mark = para.add_run(f"  [{labels.get(q.get('level'), '')}]")
         mark.font.size = Pt(9)
         mark.font.color.rgb = RGBColor(0x77, 0x77, 0x77)
+        add_picture(doc, images, q)
         for n, option in enumerate(q.get("options", [])):
             line = doc.add_paragraph(f"{letters[n % len(letters)]}) {option}")
             line.paragraph_format.left_indent = Cm(1)
@@ -95,7 +121,7 @@ def quiz_docx(title, questions, labels):
     return out.getvalue()
 
 
-def ideas_docx(title, ideas, labels):
+def ideas_docx(title, ideas, labels, images=None):
     """Идеи заданий: по каждой шаги, что нужно, время и как проверить."""
     doc = start_doc(title)
     for i, idea in enumerate(ideas, 1):
@@ -108,6 +134,7 @@ def ideas_docx(title, ideas, labels):
             note = para.add_run(f"   {minutes} {labels['minutes']}")
             note.font.size = Pt(10)
             note.font.color.rgb = RGBColor(0x77, 0x77, 0x77)
+        add_picture(doc, images, idea)
         doc.add_paragraph(idea.get("what", ""))
         for key, name in (("needs", labels["needs"]), ("assess", labels["assess"])):
             if idea.get(key):
@@ -191,19 +218,19 @@ def kahoot_xlsx(questions):
     return xlsx(rows)
 
 
-def build(kind, title, data, labels):
+def build(kind, title, data, labels, images=None):
     """Файл материала: имя файла, тип и содержимое."""
     if kind == "kahoot":
         return "xlsx", ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         kahoot_xlsx(data.get("questions", [])))
     if kind == "slides":
         return "pptx", ("application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        slides_pptx(title, data.get("slides", []), labels))
+                        slides_pptx(title, data.get("slides", []), labels, images))
     if kind == "quiz":
         return "docx", ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        quiz_docx(title, data.get("questions", []), labels))
+                        quiz_docx(title, data.get("questions", []), labels, images))
     return "docx", ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    ideas_docx(title, data.get("ideas", []), labels))
+                    ideas_docx(title, data.get("ideas", []), labels, images))
 
 
 if __name__ == "__main__":

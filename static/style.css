@@ -359,3 +359,14 @@ details.edit textarea { margin: 8px 0 0; font-size: 13px; }
 .ask-form textarea { resize: vertical; }
 .ask-files { justify-self: stretch; margin: 0; }
 .ask-files input { padding: 10px; }
+
+/* картинки в материалах */
+.mat-img { display: block; max-width: min(100%, 420px); max-height: 320px; border-radius: 10px; border: 1px solid var(--line); margin: 8px 0; }
+.slide-body { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.slide-body .points { flex: 1 1 320px; }
+.img-field { display: grid; gap: 6px; justify-items: start; }
+.img-field .field-label { font-size: 13px; color: var(--muted); }
+.img-field .thumb, .paste-zone .thumb { max-width: 220px; max-height: 160px; border-radius: 8px; border: 1px solid var(--line); }
+.paste-zone { display: grid; gap: 6px; justify-items: start; padding: 10px 12px; border: 2px dashed var(--blue-line); border-radius: 10px; background: var(--soft); cursor: text; }
+.paste-zone:focus-within, .paste-zone:focus { border-color: var(--blue); outline: none; }
+.paste-zone input { padding: 0; border: 0; background: none; }

@@ -274,6 +274,33 @@ A.ask_claude_cli, A.AI_BACKEND = real_cli, real_backend
 ok("модели: разговор на CHAT_MODEL, генерация на SUBSCRIPTION_MODEL",
    models == [A.CHAT_MODEL, A.SUBSCRIPTION_MODEL] and A.CHAT_MODEL != A.SUBSCRIPTION_MODEL, repr(models))
 
+# Картинки в материале: модель ставит только свои картинки, правка принимает скриншот, выдача только владельцу,
+# в презентацию картинка попадает
+import base64 as _b64, zipfile as _zip
+tiny = _b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+con = sqlite3.connect(DB)
+pic_mid = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'slides','Фото','new','',1)").lastrowid
+pic_id = con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,created_at) VALUES(1,?,'фото.png','image/png',?,1)",
+                     (pic_mid, tiny)).lastrowid
+con.commit()
+A.ask_claude = lambda system, content, schema, **k: {"title": "Фото", "slides": [
+    {"title": "Свій", "points": ["а"], "question": "", "notes": "", "image": pic_id},
+    {"title": "Вигаданий", "points": ["б"], "question": "", "notes": "", "image": 999999}]}
+A.make_material(pic_mid)
+placed = [s_["image"] for s_ in __import__("json").loads(con.execute("SELECT content FROM materials WHERE id=?", (pic_mid,)).fetchone()[0])["slides"]]
+ok("картинки: модель ставит только картинки этого материала", placed == [pic_id, 0], repr(placed))
+resp = c.post(f"/api/materials/{pic_mid}/edit", headers=H, content_type="multipart/form-data", data={
+    "0-title": "Свій", "0-points": "а", "0-image": str(pic_id),
+    "1-title": "Новий", "1-points": "в", "1-image": "", "1-image_file": (_io.BytesIO(tiny), "screenshot.png")})
+slides = __import__("json").loads(con.execute("SELECT content FROM materials WHERE id=?", (pic_mid,)).fetchone()[0])["slides"]
+con.close()
+ok("картинки: скриншот в правке становится картинкой пункта", resp.status_code == 200 and slides[0]["image"] == pic_id
+   and slides[1]["image"] not in (0, pic_id), f"{resp.status_code} {[x.get('image') for x in slides]}")
+ok("картинки: чужой учитель картинку не получит", c.get(f"/api/materials/{pic_mid}/images/{pic_id}", headers=other).status_code == 404
+   and c.get(f"/api/materials/{pic_mid}/images/{pic_id}", headers=H).data == tiny)
+deck = c.get(f"/api/materials/{pic_mid}/file", headers=H).data
+ok("картинки: в презентации .pptx есть картинки", any(n.startswith("ppt/media/") for n in _zip.ZipFile(_io.BytesIO(deck)).namelist()))
+
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))

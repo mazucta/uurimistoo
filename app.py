@@ -333,6 +333,12 @@ assess (как учителю понять, что получилось). Иде
 }
 
 
+for _spec in MATERIALS.values():  # к любому пункту материала можно поставить картинку учителя: id или 0
+    _item = next(v for v in _spec["schema"].values() if v.get("type") == "array")["items"]
+    _item["properties"]["image"] = {"type": "integer"}
+    _item["required"].append("image")
+
+
 AI_SUMMARY = ("""summary: три-четыре предложения о работе в целом и о том, на что учителю посмотреть в первую очередь.""",
               {"summary": {"type": "string"}})
 
@@ -825,6 +831,8 @@ def file_blocks(files):
     for f in files:
         data, mime, name = f["data"], f["mime"], f["name"]
         if mime.startswith("image/"):
+            if "id" in f.keys():  # по этому id модель может поставить картинку к пункту материала
+                out.append({"type": "text", "text": f"Картинка учителя id={f['id']} ({name}):"})
             out.append({"type": "image", "source": {"type": "base64", "media_type": mime,
                                                     "data": base64.b64encode(data).decode()}})
         elif mime == "application/pdf":
@@ -966,10 +974,13 @@ def make_material(mid):
             m["lang"], "українською мовою (по-украински)")
         system = ("Ты помогаешь учителю гимназии готовить урок. Отвечай конкретно и по делу, "
                   "без общих слов и без воды.\n\n" + spec["task"].format(count=m["count"])
+                  + "\n\nПоле image у каждого пункта: если среди приложенных картинок учителя есть подходящая "
+                    "к этому пункту, поставь её id (он написан перед картинкой), иначе 0. Не выдумывай id, "
+                    "одну картинку ставь к одному пункту."
                   + f"\n\nВЕСЬ ответ пиши {speak}.")
         content = (f"<тема>\n{m['topic']}\n</тема>\n<класс>\n{m['grade'] or 'гимназия'}\n</класс>"
                    + (f"\n<пожелания учителя>\n{m['extra']}\n</пожелания учителя>" if m["extra"] else ""))
-        files = con.execute("SELECT name, mime, data FROM uploads WHERE material_id=? ORDER BY id", (mid,)).fetchall()
+        files = con.execute("SELECT id, name, mime, data FROM uploads WHERE material_id=? ORDER BY id", (mid,)).fetchall()
         if files:
             content += ("\n\nК запросу приложены материалы учителя (выше). Опирайся на них: бери из них факты, "
                         "примеры и формулировки, держись их уровня сложности.")
@@ -984,6 +995,10 @@ def make_material(mid):
                         "действуют. Новые файлы учителя (выше) — это образцы и примеры к его просьбе."
                         " Пиши на том же языке, что и текущий материал.")
         result = ask_claude(system, content, schema, effort="medium", teacher_id=m["teacher_id"], files=files)
+        pictures = {f["id"] for f in files if f["mime"].startswith("image/")}
+        for item in result.get(MATERIAL_FIELDS[m["kind"]][0]) or []:  # только картинки этого материала
+            if isinstance(item, dict):
+                item["image"] = item.get("image") if item.get("image") in pictures else 0
         con.execute("UPDATE materials SET status='done', content=?, note='', revise='', prev_content=? WHERE id=?",
                     (json.dumps(result, ensure_ascii=False), m["content"] if m["revise"] else "", mid))
     except Exception as ex:  # фоновый поток: ошибка должна стать статусом, иначе материал зависнет
@@ -1127,7 +1142,7 @@ def lang():
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; "
                                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-                               "font-src https://fonts.gstatic.com; img-src 'self' data:; "
+                               "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; "
                                "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -1709,10 +1724,12 @@ def upload_files(me):
     return {"files": out}
 
 
-def save_upload(me, f, material_id=None, max_pages=None):
+def save_upload(me, f, material_id=None, max_pages=None, only_images=False):
     """Проверить и сохранить одно приложение. Ответ: {id, name, pages} или {error} с понятной причиной."""
     data, name = f.read(PDF_MAX + 1), re.sub(r"[\x00-\x1f]", "", f.filename or "file")[:120]
     mime = sniff(data, name)
+    if only_images and not (mime or "").startswith("image/") or only_images and len(data) > UPLOAD_MAX:
+        return {"error": translate("Картинкой может быть только изображение до 10 МБ", lang())}
     pages = pdf_pages(data) if mime == "application/pdf" else 0
     if not mime or len(data) > (PDF_MAX if mime == "application/pdf" else UPLOAD_MAX) or pages is None:
         return {"error": translate("Можно приложить картинку, Word или текст до 10 МБ и PDF до 100 МБ", lang())}
@@ -1905,6 +1922,7 @@ def edit_material(me, mid):
         data = {}
     key, fields = MATERIAL_FIELDS.get(m["kind"], ("items", []))
     d, items = body(), []
+    pictures = {r["id"] for r in q("SELECT id FROM uploads WHERE material_id=? AND mime LIKE 'image/%'", mid)}
     for i in range(0, 60):
         if not any(f"{i}-{name}" in d for name, _kind in fields):
             continue
@@ -1917,13 +1935,31 @@ def edit_material(me, mid):
                 item[name] = int(re.sub(r"\D", "", raw) or 0)
             else:
                 item[name] = raw[:2000]
-        if any(item[name] for name, _kind in fields):  # пустой кусок значит «убрать»
+        picture = as_int(d, f"{i}-image", 0)
+        shot = request.files.get(f"{i}-image_file")
+        if shot and shot.filename:  # новый скриншот или фото к этому пункту
+            saved = save_upload(me, shot, mid, only_images=True)
+            if "error" in saved:
+                page = material(me, mid)
+                return render_template("material.html", me=me, **{**page, "edit": True, "edit_error": saved["error"]}), 400
+            picture = saved["id"]
+            pictures.add(picture)
+        item["image"] = 0 if d.get(f"{i}-image_remove") or picture not in pictures else picture
+        if any(item[name] for name, _kind in fields) or item["image"]:  # пустой кусок значит «убрать»
             items.append(item)
     data[key] = items
     if "title" in d:
         data["title"] = (d.get("title") or "").strip()[:300]
     run("UPDATE materials SET content=? WHERE id=?", json.dumps(data, ensure_ascii=False), mid)
     return done(f"/materials/{mid}")
+
+
+@view("/materials/<int:mid>/images/<int:fid>")
+def material_image(me, mid, fid):
+    """Картинка пункта материала: только своему учителю и только изображение."""
+    f = q1("SELECT u.data, u.mime FROM uploads u JOIN materials m ON m.id=u.material_id "
+           "WHERE u.id=? AND u.material_id=? AND m.teacher_id=? AND u.mime LIKE 'image/%'", fid, mid, me["id"]) or abort(404)
+    return send_file(io.BytesIO(f["data"]), mimetype=f["mime"])
 
 
 @view("/materials/<int:mid>/file")
@@ -1950,7 +1986,9 @@ def material_blob(m):
               "answers": t("Ответы для учителя"), "minutes": t("мин"), "needs": t("Нужно"),
               "assess": t("Как понять, что получилось"),
               "easy": t("лёгкий"), "medium": t("средний"), "hard": t("трудный")}
-    return export.build(m["kind"], data.get("title") or m["topic"], data, labels)
+    images = {r["id"]: r["data"] for r in q("SELECT id, data FROM uploads WHERE material_id=? AND mime LIKE 'image/%'",
+                                           m["id"])}
+    return export.build(m["kind"], data.get("title") or m["topic"], data, labels, images)
 
 
 @view("/materials/<int:mid>/again", method="POST")

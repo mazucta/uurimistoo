@@ -49,9 +49,20 @@
   })
 })()
 </script>
-<form class="card edit-form" method="post" action="/materials/{{ m.id }}/edit">
+{% macro picture_field(idx, image) %}
+<div class="img-field">
+  <span class="field-label">{{ _('Картинка') }}</span>
+  {% if image %}<img class="thumb" src="/materials/{{ m.id }}/images/{{ image }}" alt="">
+  <label class="small"><input type="checkbox" name="{{ idx }}-image_remove" value="1"> {{ _('Убрать картинку') }}</label>{% endif %}
+  <input type="hidden" name="{{ idx }}-image" value="{{ image or '' }}">
+  <div class="paste-zone" tabindex="0"><span class="muted small">{{ _('Вставьте скриншот: щёлкните сюда и нажмите Cmd+V, или выберите файл') }}</span>
+    <input type="file" name="{{ idx }}-image_file" accept="image/*"></div>
+</div>
+{% endmacro %}
+<form class="card edit-form" method="post" action="/materials/{{ m.id }}/edit" enctype="multipart/form-data">
   <div class="card-head"><h2>{{ _('Правка') }}</h2>
     <span class="muted small">{{ _('Пустой кусок будет убран. Каждый тезис или вариант ответа с новой строки.') }}</span></div>
+  {% if edit_error %}<p class="error">{{ edit_error }}</p>{% endif %}
   {% if m.kind != 'ideas' %}
   <label class="field"><span>{{ _('Заголовок') }}</span><input name="title" value="{{ m.data.title or m.topic }}"></label>
   {% endif %}
@@ -75,6 +86,7 @@
       {% else %}<input name="{{ idx }}-{{ name }}" value="{{ item[name] }}">{% endif %}
     </label>
     {% endfor %}
+    {{ picture_field(idx, item.image) }}
   </fieldset>
   {% endfor %}
 
@@ -85,6 +97,7 @@
       {% if kind in ('lines', 'text') %}<textarea name="{{ items|length }}-{{ name }}" rows="2"></textarea>
       {% else %}<input name="{{ items|length }}-{{ name }}">{% endif %}</label>
     {% endfor %}
+    {{ picture_field(items|length, 0) }}
   </fieldset>
 
   <div class="row-meta">
@@ -92,6 +105,29 @@
     <a class="btn" href="/materials/{{ m.id }}">{{ _('Отмена') }}</a>
   </div>
 </form>
+<script>
+(() => {  // скриншот в пункт материала: Cmd+V, когда фокус внутри этого пункта; превью сразу
+  function show(input) {
+    const zone = input.closest('.paste-zone'), file = input.files[0]
+    zone.querySelector('img')?.remove()
+    if (!file) return
+    const img = document.createElement('img')
+    img.className = 'thumb'; img.alt = ''; img.src = URL.createObjectURL(file)
+    zone.prepend(img)
+  }
+  document.querySelectorAll('.paste-zone input[type=file]').forEach(i => i.onchange = () => show(i))
+  document.addEventListener('paste', e => {
+    const piece = document.activeElement?.closest('.piece')
+    const shot = [...e.clipboardData.files].find(f => f.type.startsWith('image/'))
+    if (!piece || !shot) return  // обычная вставка текста не трогается
+    e.preventDefault()
+    const input = piece.querySelector('.paste-zone input[type=file]'), dt = new DataTransfer()
+    dt.items.add(new File([shot], shot.name || 'screenshot.png', {type: shot.type}))
+    input.files = dt.files
+    show(input)
+  })
+})()
+</script>
 
 {% else %}
 
@@ -119,7 +155,8 @@
 {% if m.kind == 'kahoot' %}
 {% if m.status == 'done' %}
 <div class="banner info">
-  <p>{{ _('Чтобы перенести квиз в Kahoot: скачайте таблицу, в Kahoot создайте новый kahoot, нажмите Add question → Import spreadsheet и загрузите этот файл.') }}</p>
+  <p>{{ _('Чтобы перенести квиз в Kahoot: скачайте таблицу, в Kahoot создайте новый kahoot, нажмите Add question → Import spreadsheet и загрузите этот файл.') }}
+    {% if items|selectattr('image')|list %}{{ _('Картинки в Kahoot добавляются вручную: таблица Kahoot их не принимает.') }}{% endif %}</p>
   <div class="row-meta"><a class="btn" href="https://create.kahoot.it/" target="_blank" rel="noopener">{{ _('Открыть Kahoot') }}</a></div>
 </div>
 {% endif %}
@@ -131,6 +168,7 @@
     <li>
       <div class="q-head"><span class="grow">{{ q.question }}</span>
         <span class="muted small nowrap">{{ q.seconds }} {{ _('сек') }}</span></div>
+      {% if q.image %}<img class="mat-img" src="/materials/{{ m.id }}/images/{{ q.image }}" alt="">{% endif %}
       <ul class="options">{% for o in q.answers %}
         <li class="{{ 'right' if loop.index == q.correct }}">{{ o }}{% if loop.index == q.correct %} ✓{% endif %}</li>{% endfor %}</ul>
     </li>
@@ -144,7 +182,8 @@
   {% for s in items %}
   <section class="card slide">
     <div class="card-head"><h2><span class="muted">{{ loop.index }}.</span> {{ s.title }}</h2></div>
-    <ul class="points">{% for p in s.points %}<li>{{ p }}</li>{% endfor %}</ul>
+    <div class="slide-body"><ul class="points">{% for p in s.points %}<li>{{ p }}</li>{% endfor %}</ul>
+      {% if s.image %}<img class="mat-img" src="/materials/{{ m.id }}/images/{{ s.image }}" alt="">{% endif %}</div>
     {% if s.question %}<p class="ask"><b>{{ _('Вопрос классу') }}:</b> {{ s.question }}</p>{% endif %}
     {% if s.notes %}<p class="muted small">{{ _('Учителю') }}: {{ s.notes }}</p>{% endif %}
   </section>
@@ -162,6 +201,7 @@
       <div class="q-head"><span class="badge tiny {{ 'ok' if q.level == 'easy' else 'warn' if q.level == 'medium' else 'danger' }}">
         {{ _('лёгкий') if q.level == 'easy' else _('средний') if q.level == 'medium' else _('трудный') }}</span>
         <span class="grow">{{ q.question }}</span></div>
+      {% if q.image %}<img class="mat-img" src="/materials/{{ m.id }}/images/{{ q.image }}" alt="">{% endif %}
       {% if q.options %}<ul class="options">{% for o in q.options %}<li>{{ o }}</li>{% endfor %}</ul>{% endif %}
       <details><summary>{{ _('Ответ') }}</summary><p>{{ q.answer }}</p></details>
     </li>
@@ -176,6 +216,7 @@
   <section class="card">
     <div class="card-head"><h2>{{ i.title }}</h2>
       <span class="muted small">{{ i.minutes }} {{ _('мин') }}</span></div>
+    {% if i.image %}<img class="mat-img" src="/materials/{{ m.id }}/images/{{ i.image }}" alt="">{% endif %}
     <p>{{ i.what }}</p>
     <p class="muted small">{{ _('Нужно') }}: {{ i.needs }}</p>
     <p class="small good">{{ _('Как понять, что получилось') }}: {{ i.assess }}</p>
