@@ -349,7 +349,7 @@ alien_take = c.post(f"/api/materials/books/{book_id}/take", headers=other, json=
 ok("учебник: хранится в библиотеке и не стирается сроком", r_book.status_code == 200 and kept == 1, f"{r_book.status_code} {kept}")
 ok("учебник: страницы и рисунки становятся вложениями, чужому недоступен",
    took["files"][0]["name"] == "Біологія 7 (с. 2–3)" and took["files"][0]["pages"] == 2
-   and len(took["files"]) == 2 and "с. 2" in took["files"][1]["name"] and alien_take == 404, repr(took))
+   and len(took["files"]) == 4 and "с. 2" in took["files"][1]["name"] and took["files"][3]["name"].startswith("Біологія 7, с. 3") and alien_take == 404, repr(took))
 
 # PDF материала: рисунки из него достаются отдельными картинками один раз; переделка меняет вид материала
 con = sqlite3.connect(DB)
@@ -370,9 +370,32 @@ pics = con.execute("SELECT COUNT(*) FROM uploads WHERE material_id=? AND parent>
 kind_now = con.execute("SELECT kind FROM materials WHERE id=?", (with_pdf,)).fetchone()[0]
 con.close()
 ok("PDF материала: рисунки достаются один раз и уходят в модель отдельными картинками",
-   pics == 1 and any(", с. 1," in n for n in got["files"]), f"{pics} {got.get('files')}")
+   pics == 4 and any(", с. 1," in n for n in got["files"]) and sum(n.endswith("сторінка") for n in got["files"]) == 3, f"{pics} {got.get('files')}")
 ok("переделка: вид меняется на рабочий лист, рисовать символами запрещено",
    kind_now == "worksheet" and "Не рисуй символами" in got["system"], kind_now)
+
+# Снимки страниц и вырезы: страница становится картинкой, модель называет края куска, программа вырезает
+shots = A.page_snapshots(_buf.getvalue(), [1, 2])
+con = sqlite3.connect(DB)
+snap_mid = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'slides','Сторінка','new','',1)").lastrowid
+snap_id = con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,created_at) VALUES(1,?,'с. 1, сторінка','image/png',?,1)",
+                      (snap_mid, shots[0][1])).lastrowid
+con.commit()
+A.ask_claude = lambda system, content, schema, **k: {"title": "x", "cuts": [
+    {"source": snap_id, "left": 10, "top": 20, "right": 60, "bottom": 70, "name": "завдання 5"},
+    {"source": 777777, "left": 0, "top": 0, "right": 50, "bottom": 50, "name": "чужий"}],
+    "slides": [{"title": "a", "points": ["b"], "question": "", "notes": "", "image": -1},
+               {"title": "c", "points": ["d"], "question": "", "notes": "", "image": -2}]}
+A.make_material(snap_mid)
+placed = [x["image"] for x in __import__("json").loads(con.execute("SELECT content FROM materials WHERE id=?", (snap_mid,)).fetchone()[0])["slides"]]
+piece = con.execute("SELECT data FROM uploads WHERE id=?", (placed[0],)).fetchone()
+con.close()
+from PIL import Image as _I
+w0, h0 = _I.open(_io.BytesIO(shots[0][1])).size
+w1, h1 = _I.open(_io.BytesIO(piece[0])).size if piece else (0, 0)
+ok("снимки: страница рендерится в картинку", len(shots) == 2 and shots[0][1][:4] == b"\x89PNG")
+ok("вырез: кусок вырезан по краям, чужой источник отброшен", placed[1] == 0 and abs(w1 - w0 * 0.5) <= 2 and abs(h1 - h0 * 0.5) <= 2,
+   f"{placed} {w0}x{h0} -> {w1}x{h1}")
 
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)

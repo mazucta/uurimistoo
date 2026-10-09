@@ -387,6 +387,12 @@ for _spec in MATERIALS.values():  # к любому пункту материа�
     _item = next(v for v in _spec["schema"].values() if v.get("type") == "array")["items"]
     _item["properties"]["image"] = {"type": "integer"}
     _item["required"].append("image")
+    # вырез из снимка страницы: модель называет края куска в процентах, программа вырезает сама
+    _spec["schema"]["cuts"] = {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "required": ["source", "left", "top", "right", "bottom", "name"],
+        "properties": {"source": {"type": "integer"}, "left": {"type": "integer"}, "top": {"type": "integer"},
+                       "right": {"type": "integer"}, "bottom": {"type": "integer"}, "name": {"type": "string"}}}}
 
 
 AI_SUMMARY = ("""summary: три-четыре предложения о работе в целом и о том, на что учителю посмотреть в первую очередь.""",
@@ -1016,6 +1022,37 @@ def run_ai(pid):
 PDF_PICTURES = 24  # рисунков из PDF материала: модель вставляет картинки только по id, из PDF их не взять
 
 
+SNAPSHOT_PAGES = 10   # снимков страниц за раз: каждый снимок модель читает как картинку, это дорого
+
+
+def page_snapshots(data, pages):
+    """Снимки страниц PDF целиком, как PNG: то, что видно на странице, включая таблицы и схемы из линий."""
+    import pypdfium2
+    pdf = pypdfium2.PdfDocument(data)
+    try:
+        out = []
+        for n in pages[:SNAPSHOT_PAGES]:
+            buf = io.BytesIO()
+            pdf[n - 1].render(scale=1.5).to_pil().save(buf, "PNG", optimize=True)
+            out.append((n, buf.getvalue()))
+        return out
+    finally:
+        pdf.close()
+
+
+def cut_out(png, cut):
+    """Кусок картинки по краям в процентах. None, если края бессмысленные."""
+    from PIL import Image
+    left, top, right, bottom = (max(0, min(100, int(cut.get(k) or 0))) for k in ("left", "top", "right", "bottom"))
+    if right - left < 3 or bottom - top < 3:
+        return None
+    img = Image.open(io.BytesIO(png))
+    w, h = img.size
+    buf = io.BytesIO()
+    img.crop((w * left // 100, h * top // 100, w * right // 100, h * bottom // 100)).save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
 def pictures_from_pdfs(con, m):
     """Рисунки, вставленные в PDF материала (учебник, тетрадь), становятся отдельными картинками с id.
     Без этого модель видит рисунок на странице, но вставить его не может и начинает рисовать символами."""
@@ -1031,6 +1068,11 @@ def pictures_from_pdfs(con, m):
                         "VALUES(?,?,?,?,?,0,?,?)", (m["teacher_id"], m["id"],
                         f"{base}, с. {page}, {translate('рис.', m['lang'])} {counter[page]}"[:160],
                         "image/png", png, pdf["id"], time.time()))
+        for page, png in page_snapshots(pdf["data"], list(range(1, pdf["pages"] + 1))):
+            con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,pages,parent,created_at) "
+                        "VALUES(?,?,?,?,?,0,?,?)", (m["teacher_id"], m["id"],
+                        f"{base}, с. {page}, {translate('страница', m['lang'])}"[:160], "image/png", png, pdf["id"],
+                        time.time()))
         con.commit()
 
 
@@ -1048,6 +1090,12 @@ def make_material(mid):
                   + "\n\nПоле image у каждого пункта: если среди приложенных картинок учителя есть подходящая "
                     "к этому пункту, поставь её id (он написан перед картинкой), иначе 0. Не выдумывай id, "
                     "одну картинку ставь к одному пункту."
+                  + "\n\nСнимки страниц (картинки учителя с подписью «страница») можно вставить целиком по id или "
+                    "вырезать из них кусок: задание, таблицу, рисунок, схему. Для выреза добавь в cuts "
+                    "{source: id снимка, left, top, right, bottom: края куска в процентах ширины и высоты страницы "
+                    "от левого верхнего угла, name: что это}, а в image или pictures поставь -1 для первого выреза, "
+                    "-2 для второго и так далее. Бери кусок с небольшим запасом по краям, без соседних заданий. "
+                    "Не нужны вырезы — cuts пустой."
                   + "\n\nНе рисуй символами: никаких часов, схем, таблиц и картинок из знаков, никаких ``` и "
                     "markdown. Картинка в материале — только картинка учителя по её id (поле image, у рабочего "
                     "листа ещё pictures). Если подходящей картинки нет, построй задание без неё: например, время "
@@ -1077,6 +1125,22 @@ def make_material(mid):
                         " Пиши на том же языке, что и текущий материал.")
         result = ask_claude(system, content, schema, effort="medium", teacher_id=m["teacher_id"], files=files)
         pictures = {f["id"] for f in files if f["mime"].startswith("image/")}
+        sources = {f["id"]: f for f in files if f["mime"].startswith("image/")}
+        cuts = {}
+        for n, cut in enumerate(result.pop("cuts", None) or [], 1):  # -1, -2…: вырезы по порядку
+            src = sources.get(cut.get("source")) if isinstance(cut, dict) else None
+            piece = cut_out(src["data"], cut) if src else None
+            if piece:
+                cuts[-n] = con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,pages,parent,created_at) "
+                                       "VALUES(?,?,?,?,?,0,?,?)", (m["teacher_id"], mid,
+                                       f"{src['name']} — {str(cut.get('name') or '')}"[:160], "image/png", piece,
+                                       src["id"], time.time())).lastrowid
+        pictures |= set(cuts.values())
+        for item in result.get(MATERIAL_FIELDS[m["kind"]][0]) or []:
+            if isinstance(item, dict):
+                item["image"] = cuts.get(item.get("image"), item.get("image"))
+                if isinstance(item.get("pictures"), list):
+                    item["pictures"] = [cuts.get(x, x) for x in item["pictures"]]
         for item in result.get(MATERIAL_FIELDS[m["kind"]][0]) or []:  # только картинки этого материала
             if isinstance(item, dict):
                 item["image"] = item.get("image") if item.get("image") in pictures else 0
@@ -1905,6 +1969,11 @@ def take_from_book(me, fid):
     for page, png in page_pictures(book["data"], pages):
         counter[page] = counter.get(page, 0) + 1
         label = f"{book['name']}, с. {page}, {translate('рис.', lang())} {counter[page]}"[:160]
+        pid = run("INSERT INTO uploads(teacher_id,name,mime,data,pages,parent,created_at) VALUES(?,?,?,?,0,?,?)",
+                  me["id"], label, "image/png", png, fid_pdf, time.time()).lastrowid
+        out.append({"id": pid, "name": label, "pages": 0})
+    for page, png in page_snapshots(book["data"], pages):  # снимок страницы: из него модель вырежет нужный кусок
+        label = f"{book['name']}, с. {page}, {translate('страница', lang())}"[:160]
         pid = run("INSERT INTO uploads(teacher_id,name,mime,data,pages,parent,created_at) VALUES(?,?,?,?,0,?,?)",
                   me["id"], label, "image/png", png, fid_pdf, time.time()).lastrowid
         out.append({"id": pid, "name": label, "pages": 0})
