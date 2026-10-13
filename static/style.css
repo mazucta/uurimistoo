@@ -398,3 +398,4 @@ details.edit textarea { margin: 8px 0 0; font-size: 13px; }
 .thumbs .thumb { max-width: 90px; max-height: 70px; }
 .ask-kind { margin: 0; }
 .ask-kind select { width: auto; }
+.checks li.strong { background: var(--bad-bg); border-radius: 8px; padding: 6px 8px; }

@@ -397,6 +397,38 @@ ok("снимки: страница рендерится в картинку", le
 ok("вырез: кусок вырезан по краям, чужой источник отброшен", placed[1] == 0 and abs(w1 - w0 * 0.5) <= 2 and abs(h1 - h0 * 0.5) <= 2,
    f"{placed} {w0}x{h0} -> {w1}x{h1}")
 
+# Оригинальность: совпадения с другими работами учителя, цитирование и сильные признаки ИИ считает код
+class _Doc:
+    def __init__(self, text): self._t = text
+    def text(self): return self._t
+    def sources(self): return ["Hirth L. 2013."]
+    def body(self): return [{"text": self._t, "level": 0}]
+    def headings(self): return []
+    def citations(self): return []
+    def meta(self): return {}
+    unknown, margins = frozenset(), {}
+common = ("Отрицательные цены на электроэнергию возникают в часы, когда солнечные станции производят больше "
+          "энергии, чем может потребить сеть, и производитель доплачивает за отбор мощности.")
+con = sqlite3.connect(DB)
+twin = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,uploaded_at) VALUES(1,1,'Робота Петра',?,?)",
+                   (common + " Інший кінець.", __import__("time").time())).lastrowid
+alien_twin = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,uploaded_at) VALUES(2,1,'Чужа',?,?)",
+                         (common, __import__("time").time())).lastrowid
+mine = con.execute("INSERT INTO papers(teacher_id,profile_id,title,uploaded_at) VALUES(1,1,'Моя',?)", (__import__("time").time(),)).lastrowid
+con.commit(); con.close()
+with A.app.test_request_context("/"):
+    A.check_paper(mine, _Doc(common + " Конечно! Вот ваш текст. Ещё [7]. Потом длинная мысль. «Длинная цитата без всякой ссылки на источник в этом месте работы» конец."),
+                  1, "uk", profile={"rules": '{"do_format": 0, "do_req": 0, "do_photos": 0, "do_sources": 0}'})
+    got = {k: [(r["label"], r["status"], r["note"]) for r in A.findings_of(mine, k)] for k in ("match", "cite", "aisign")}
+ok("совпадения: найдена своя работа с процентом, чужого учителя не видно",
+   len(got["match"]) == 1 and got["match"][0][0].startswith("Робота Петра") and got["match"][0][2].endswith("%"), repr(got["match"]))
+ok("цитирование и сильные признаки ИИ попадают в отчёт",
+   any("[7]" in n for _l, _s, n in got["cite"]) and any("Цитата" in l for l, _s, _n in got["cite"])
+   and any("чат-бота" in l for l, _s, _n in got["aisign"]), repr(got["cite"] + got["aisign"]))
+page = c.get(f"/papers/{mine}", headers=H)
+ok("отчёт с новыми разделами открывается", page.status_code == 200 and 'id="matches"' in page.get_data(as_text=True)
+   and 'id="cites"' in page.get_data(as_text=True), f"код {page.status_code}")
+
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))

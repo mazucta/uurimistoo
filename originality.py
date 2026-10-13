@@ -1,0 +1,146 @@
+"""Оригинальность и честность текста, то, что считает код без модели:
+совпадения с другими загруженными работами, цитирование, несомненные следы чат-бота.
+
+Процент «написано ИИ» здесь не считается и не показывается: по тексту его надёжно не установить.
+Сильные признаки — это только то, что нельзя объяснить ничем, кроме копирования из чат-бота.
+"""
+import re
+
+SHINGLE = 8                 # совпадение — это 8 слов подряд: общие фразы короче
+LOCAL_MIN = 0.03            # меньше 3% совпавшего текста — шум (термины, названия, шаблонные фразы)
+WORD = re.compile(r"[^\W\d_]+(?:[-'’][^\W\d_]+)*|\d+", re.U)
+
+
+def words(text):
+    return [w.lower() for w in WORD.findall(text)]
+
+
+def overlap(text, others):
+    """Совпадения работы с другими работами учителя. others: [(подпись, текст)].
+    Ответ: [(подпись, доля совпавшего текста этой работы, до трёх совпавших кусков)] по убыванию доли."""
+    mine = words(text)
+    if len(mine) < SHINGLE:
+        return []
+    grams = [tuple(mine[i:i + SHINGLE]) for i in range(len(mine) - SHINGLE + 1)]
+    out = []
+    for label, other in others:
+        theirs = words(other)
+        pool = {tuple(theirs[i:i + SHINGLE]) for i in range(len(theirs) - SHINGLE + 1)}
+        hit = [g in pool for g in grams]
+        covered = [False] * len(mine)  # слова этой работы, попавшие хоть в одно совпадение
+        for i, h in enumerate(hit):
+            if h:
+                covered[i:i + SHINGLE] = [True] * SHINGLE
+        share = sum(covered) / len(mine)
+        if share < LOCAL_MIN:
+            continue
+        pieces, i = [], 0
+        while i < len(covered) and len(pieces) < 3:  # самые первые сплошные куски совпадения
+            if covered[i]:
+                j = i
+                while j < len(covered) and covered[j]:
+                    j += 1
+                pieces.append(" ".join(mine[i:min(j, i + 30)]))
+                i = j
+            else:
+                i += 1
+        out.append((label, share, pieces))
+    return sorted(out, key=lambda x: -x[1])
+
+
+QUOTE = re.compile(r"[«„“\"]([^«»„“”\"]{40,400})[»“”\"]")
+
+
+def citations(text, sources, cite_pattern):
+    """Проблемы цитирования. sources: строки списка источников; cite_pattern: регулярка ссылок в тексте.
+    Ответ: [(что не так, фрагмент)]."""
+    out = []
+    for m in QUOTE.finditer(text):  # длинная цитата должна иметь ссылку рядом: в той же фразе или сразу после
+        after = text[m.end():m.end() + 160]
+        if not cite_pattern.search(text[max(0, m.start() - 20):m.end()] + after.split(".")[0] + "."):
+            out.append(("Цитата без ссылки на источник", m.group(1)[:160]))
+    cited_numbers, cited_names = set(), []
+    for c in cite_pattern.findall(text):
+        nums = re.findall(r"^\[(\d{1,3})", c)
+        if nums:
+            n = int(nums[0])
+            cited_numbers.add(n)
+            if n > len(sources):
+                out.append(("Ссылка на источник, которого нет в списке", c))
+            continue
+        # автор — слово с большой буквы («составлено автором по данным Elering, 2026a» → Elering)
+        names = [w.lower() for w in re.findall(r"\b[^\W\d_a-zа-яёіїєґõäöü][^\W\d_]{2,}", c, re.U)]
+        if names:
+            cited_names.append((c, names))
+    lowered = [s.lower() for s in sources]
+    for c, names in cited_names:
+        if lowered and not any(n in s for s in lowered for n in names):
+            out.append(("Ссылка на источник, которого нет в списке", c))
+    used = {n - 1 for n in cited_numbers} | {i for i, s in enumerate(lowered) for _c, names in cited_names
+                                             if any(n in s for n in names)}
+    if cited_numbers or cited_names:  # если ссылок по тексту нет вовсе, об этом и так скажут условия учителя
+        for i, s in enumerate(sources):
+            if i not in used:
+                out.append(("Источник из списка ни разу не упомянут в тексте", s[:160]))
+    return list(dict.fromkeys(out))  # одна и та же ссылка под каждой таблицей — одно замечание
+
+
+# Следы чат-бота: так ученик не пишет, так отвечает модель, а ученик скопировал ответ целиком.
+BOT = re.compile("|".join([
+    r"\bas an ai\b", r"\bas a language model\b", r"\bi hope this helps\b", r"\bcertainly!? here(?: is|'s)\b",
+    r"\bsure!? here(?: is|'s)\b", r"\bknowledge cutoff\b",
+    r"как (?:ии|искусственный интеллект|языковая модель)", r"\bконечно!? вот\b", r"надеюсь,? это поможет",
+    r"як (?:ші|штучний інтелект|мовна модель)", r"\bзвісно!? ось\b", r"сподіваюся,? це допоможе",
+    r"tehisintellektina", r"keelemudelina", r"\bloomulikult!? siin\b", r"loodan,? et see aitab",
+]), re.I | re.U)
+MARKDOWN = re.compile(r"\*\*[^*\n]{2,80}\*\*|^#{2,4} \S|^```", re.M)
+PLACEHOLDER = re.compile(r"\[(?:вставьте|вставте|укажите|вкажіть|ваше|ваш|ваша|your|insert|sisesta|lisa)[^\]]{0,60}\]", re.I | re.U)
+INVISIBLE = re.compile("[​‌‍⁠﻿]")
+MIXED = re.compile(r"\b(?=[^\W\d_]*[а-яіїєґё])(?=[^\W\d_]*[a-z])[^\W\d_]{4,}\b", re.I | re.U)
+
+
+def ai_signs(text):
+    """Несомненные следы: фраза чат-бота, остатки разметки, незаполненная заготовка, невидимые символы,
+    слова из смеси кириллицы и латиницы (так обходят проверку на совпадения). Ответ: [(признак, фрагмент)]."""
+    out = []
+    for pattern, label in ((BOT, "Фраза чат-бота"), (PLACEHOLDER, "Незаполненная заготовка из ответа чат-бота"),
+                           (MARKDOWN, "Остатки разметки чат-бота (**, ###, ```)")):
+        for m in list(pattern.finditer(text))[:3]:
+            out.append((label, text[max(0, m.start() - 40):m.end() + 40].replace("\n", " ").strip()))
+    hidden = INVISIBLE.findall(text)
+    if hidden:
+        out.append(("Невидимые символы в тексте", f"{len(hidden)}"))
+    mixed = [m.group(0) for m in MIXED.finditer(text)]
+    if len(mixed) >= 3:  # одно-два слова бывают опечаткой раскладки, много — уже подмена букв
+        out.append(("Слова из смеси кириллицы и латиницы: так прячут текст от проверки на совпадения", ", ".join(mixed[:6])))
+    return out
+
+
+if __name__ == "__main__":
+    base = ("Отрицательные цены на электроэнергию возникают в часы, когда солнечные станции производят "
+            "больше энергии, чем может потребить сеть, и производитель доплачивает за отбор мощности")
+    hits = overlap(base + " и ещё моя собственная мысль про Эстонию", [("Иванов", "Вступ. " + base + ". Конец."), ("Другой", "совсем другой текст")])
+    assert len(hits) == 1 and hits[0][0] == "Иванов" and hits[0][1] > 0.7 and hits[0][2], hits
+    assert overlap("коротко", [("x", "коротко")]) == []
+
+    cite = re.compile(r"\([^()]{2,90}?\d{4}[^()]{0,25}\)|\[\d{1,3}\]")
+    srcs = ["Hirth L. The market value of solar power. 2013.", "Elering. Andmed. 2025.", "Никто не цитирует 2020."]
+    assert citations("Таблица (составлено автором по данным Hirth, 2013). Ещё (составлено автором по данным Hirth, 2013).",
+                     srcs, cite) == [("Источник из списка ни разу не упомянут в тексте", s) for s in srcs[1:]]
+    text = ("По данным Hirth (Hirth, 2013) стоимость падает. «Солнечная энергия дешевеет быстрее, чем ожидали аналитики "
+            "всех крупных агентств» — и это важно. Таблица [2]. Ещё [7] и (Петров, 2019).")
+    problems = citations(text, srcs, cite)
+    kinds = [p[0] for p in problems]
+    assert kinds.count("Цитата без ссылки на источник") == 1, problems
+    assert "[7]" in [p[1] for p in problems] and "(Петров, 2019)" in [p[1] for p in problems], problems
+    assert any(p[0].startswith("Источник из списка ни разу") and "Никто" in p[1] for p in problems), problems
+    assert not any(p[0].startswith("Источник из списка ни разу") and "Hirth" in p[1] for p in problems), problems
+    assert citations("Без ссылок вовсе.", srcs, cite) == []
+
+    signs = ai_signs("Конечно! Вот ваш реферат.\n## Введение\nТекст [вставьте название школы]​. "
+                     "Слова pуcский, cвoй, нaш, тeкст.")
+    labels = [s[0] for s in signs]
+    assert "Фраза чат-бота" in labels and any("разметки" in x for x in labels) and any("заготовка" in x for x in labels), labels
+    assert "Невидимые символы в тексте" in labels and any("кириллицы" in x for x in labels), labels
+    assert ai_signs("Обычный текст ученика без странностей, с одним словом Elering.") == []
+    print("ok")

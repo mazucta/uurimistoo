@@ -11,7 +11,7 @@ from urllib.parse import urlencode, urlparse
 from flask import Flask, g, request, render_template, abort, redirect, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 import anthropic
-import docx_read, export, images, pdf_read, rubric
+import docx_read, export, images, originality, pdf_read, rubric
 from i18n import LANGS, translate
 
 # Локальные секреты (ключ API, ключи Canva) лежат в .env рядом с программой, в git он не попадает.
@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS canva_states(
   state TEXT PRIMARY KEY, user_id INTEGER NOT NULL, verifier TEXT NOT NULL, next TEXT NOT NULL, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS findings(
   id INTEGER PRIMARY KEY, paper_id INTEGER NOT NULL REFERENCES papers(id),
-  kind TEXT NOT NULL CHECK(kind IN ('format','req','source','claim','rubric','photo','sign','praise','sense','lang')),
+  kind TEXT NOT NULL CHECK(kind IN ('format','req','source','claim','rubric','photo','sign','praise','sense','lang',
+                                   'match','cite','aisign')),
   position INTEGER NOT NULL DEFAULT 0, ref INTEGER, label TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'unclear', note TEXT NOT NULL DEFAULT '', extra TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS findings_paper ON findings(paper_id, kind, position);
@@ -118,7 +119,7 @@ with sqlite3.connect(DB) as _c:
     _c.executescript(SCHEMA)
     # ponytail: проверка идёт в потоке процесса и теряется при перезапуске; с несколькими воркерами нужна очередь
     # в старой базе у findings был список видов покороче: пересобираем таблицу, записи сохраняем
-    if "'sense'" not in (_c.execute("SELECT sql FROM sqlite_master WHERE name='findings'").fetchone() or [""])[0]:
+    if "'aisign'" not in (_c.execute("SELECT sql FROM sqlite_master WHERE name='findings'").fetchone() or [""])[0]:
         _columns = ",".join(r[1] for r in _c.execute("PRAGMA table_info(findings)"))
         _c.executescript("ALTER TABLE findings RENAME TO findings_old;" + SCHEMA
                          + f"INSERT INTO findings({_columns}) SELECT {_columns} FROM findings_old;"
@@ -169,6 +170,7 @@ FORMAT_DEFAULTS = {
 CHECK_DEFAULTS = {
     "do_format": 1, "do_req": 1, "do_photos": 1, "do_sources": 1,
     "do_rubric": 1, "do_authorship": 1, "do_sense": 1, "do_language": 1,
+    "do_matches": 1, "do_citations": 1,
 }
 
 # Условия, которые проверяются кодом точно. Остальные формулировки достаются ИИ.
@@ -245,6 +247,16 @@ strengths: от двух до четырёх сильных сторон все�
                                      "score": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
                                      "good": {"type": "string"}, "lost": {"type": "string"}}}},
                    "strengths": {"type": "array", "items": {"type": "string"}}}),
+    "do_matches": ("""matches: проверь оригинальность. Выбери до восьми самых своеобразных предложений работы (не цитаты в кавычках, не общеизвестные факты, не названия) и поищи каждое дословно через web_search, в кавычках. Если нашёлся текст, совпадающий почти слово в слово, запиши:
+- quote: фрагмент работы символ в символ, до 25 слов;
+- url: адрес страницы, где он найден;
+- cited: true, если в работе рядом с этим местом стоит ссылка на этот источник, иначе false;
+- note: что найдено, одно предложение (дословная копия, пересказ близко к тексту, перевод).
+Пиши только найденное на самом деле, с настоящим адресом. Не нашлось — пустой список.""",
+                   {"matches": {"type": "array", "items": {
+                       "type": "object", "additionalProperties": False, "required": ["quote", "url", "cited", "note"],
+                       "properties": {"quote": {"type": "string"}, "url": {"type": "string"},
+                                      "cited": {"type": "boolean"}, "note": {"type": "string"}}}}}),
     "do_authorship": ("""authorship: писал ли работу сам ученик. verdict: student, если текст похож на работу школьника; ai, если видны признаки текста от языковой модели; unclear, если по тексту не понять. В signs перечисли до пяти конкретных наблюдений из текста, по которым ты так решила, каждое до 15 слов. Это не доказательство, а наблюдения для учителя: ровный стиль сам по себе ничего не доказывает, поэтому при сомнении ставь unclear.""",
                       {"authorship": {
                           "type": "object", "additionalProperties": False,
@@ -656,6 +668,18 @@ def teacher_of(p):
     return t if isinstance(t, dict) else {}
 
 
+def own_text(doc):
+    """Текст разделов самой работы: без титула, резюме и аннотации (там название в кавычках — не цитата),
+    списка источников и приложений."""
+    out, skip = [], False
+    for p in doc.body():
+        if p["level"]:
+            skip = p["text"].strip().lower().startswith(docx_read.FRONT + docx_read.SOURCE_HEADS + tuple(docx_read.APPENDIX))
+        elif not skip:
+            out.append(p["text"])
+    return "\n".join(out)
+
+
 def check_paper(pid, doc, teacher_id, lang_, data=b"", filename="", profile=None, sources=None):
     r = rules_of(profile)
     reqs = requirements_of(teacher_id, (profile or {}).get("id"))
@@ -671,6 +695,21 @@ def check_paper(pid, doc, teacher_id, lang_, data=b"", filename="", profile=None
     store_findings(pid, "photo", [{"label": p["name"], "status": p["status"], "note": p["note"]}
                                   for p in images.photos(data, filename)] if data and r["do_photos"] else [])
     store_findings(pid, "sign", file_signs(doc, data, filename, lang_) if r["do_authorship"] else [])
+    text, t = doc.text(), (lambda s: translate(s, lang_))
+    store_findings(pid, "aisign", [{"label": t(what), "status": "fail", "note": where[:400]}
+                                   for what, where in originality.ai_signs(text)] if r["do_authorship"] else [])
+    store_findings(pid, "cite", [{"label": t(what), "status": "fail", "note": where[:400]}
+                                 # цитаты и ссылки — только в основном тексте: название в аннотации не цитата
+                                 for what, where in originality.citations(own_text(doc), doc.sources(), docx_read.CITATION)]
+                   if r["do_citations"] else [])
+    others = []
+    if r["do_matches"]:  # совпадения с другими работами этого учителя: код, точно и без модели
+        rows = q("SELECT id, title, filename, student, text, uploaded_at FROM papers WHERE teacher_id=? AND id<>?", teacher_id, pid)
+        others = originality.overlap(text, [(" · ".join(filter(None, (o["title"] or o["filename"], o["student"],
+                                                                      fmt_dt(o["uploaded_at"])))), o["text"]) for o in rows])
+    store_findings(pid, "match", [{"label": label[:300], "status": "local", "note": f"{round(share * 100)}%",
+                                   "extra": " … ".join(pieces)[:500]} for label, share, pieces in others[:10]]
+                   if r["do_matches"] else [])
     for kind in ("claim", "rubric", "sense", "lang"):
         store_findings(pid, kind, [])
 
@@ -960,7 +999,8 @@ def run_ai(pid):
         content = ai_content(p, conditions, listing, r)
         # web-инструменты нужны только для источников, без них проверка вдвое дешевле и быстрее
         tools = [{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 20},
-                 {"type": "web_search_20260209", "name": "web_search", "max_uses": 20}] if r["do_sources"] else []
+                 {"type": "web_search_20260209", "name": "web_search", "max_uses": 20}] \
+            if r["do_sources"] or r["do_matches"] else []
         result = ask_claude(system, content, schema, tools=tools, teacher_id=p["teacher_id"])
 
         by_position = {r["position"]: r["id"] for r in sources}
@@ -1007,6 +1047,11 @@ def run_ai(pid):
             VALUES(?,'lang',?,?,?,?)""",
             [(pid, i, c["quote"][:300], c["kind"][:40], c["fix"][:400])
              for i, c in enumerate(result.get("language", [])[:20], 1)])
+        con.execute("DELETE FROM findings WHERE paper_id=? AND kind='match' AND status LIKE 'web%'", (pid,))
+        con.executemany("""INSERT INTO findings(paper_id,kind,position,label,status,note,extra)
+            VALUES(?,'match',?,?,?,?,?)""",  # адрес только http(s): он станет ссылкой в отчёте
+            [(pid, 100 + i, c["quote"][:300], "web_cited" if c.get("cited") else "web", c["note"][:400], c["url"][:500])
+             for i, c in enumerate(result.get("matches", [])[:8], 1) if str(c.get("url", "")).startswith(("http://", "https://"))])
         con.execute("UPDATE papers SET ai_status='done', ai_note=?, verdict=?, verdict_note=? WHERE id=?",
                     (result.get("summary", "")[:1000], author.get("verdict"), (author.get("note") or "")[:500], pid))
     except Exception as ex:  # фоновый поток: любая ошибка должна стать статусом, иначе проверка зависнет
@@ -1574,6 +1619,7 @@ def report(me, pid):
             "rubric": marks, "praise": praise, "sense": findings_of(pid, "sense"), "lang_notes": findings_of(pid, "lang"),
             "checks": paper_rules(p, used),
             "photos": findings_of(pid, "photo"), "signs": findings_of(pid, "sign"),
+            "matches": findings_of(pid, "match"), "cites": findings_of(pid, "cite"), "aisigns": findings_of(pid, "aisign"),
             "profile": used["name"] if used else "",
             "score": rubric.total([m["status"] for m in marks if m["status"]]) if marks else None,
             "max_score": rubric.MAX_SCORE, "backend": backend(me["id"])}
@@ -1669,6 +1715,12 @@ def report_file(me, pid):
         lines = [f"{t('решение учителя')}: {t(VERDICTS[tt['verdict']])}", tt.get("verdict_note")] if tt.get("verdict") else []
         lines += [p["verdict"] and f"{t('ИИ')}: {t(VERDICTS.get(p['verdict'], ''))}", p["verdict_note"]]
         parts.append((t("Сам ли ученик писал работу"), lines + [row(x) for x in d["signs"]]))
+        parts.append((t("Сильные признаки ИИ"), [f"{x['label']}: «{x['note']}»" for x in d["aisigns"]]))
+    if c["do_matches"]:
+        parts.append((t("Совпадения"), [f"{x['label']} — {x['note']}: «{x['extra']}»" if x["status"] == "local"
+                                        else f"«{x['label']}» — {x['extra']} ({x['note']})" for x in d["matches"]]))
+    if c["do_citations"]:
+        parts.append((t("Цитирование"), [f"{x['label']}: «{x['note']}»" for x in d["cites"]]))
     parts.append((t("Что говорит ИИ"), [p["ai_note"] if p["ai_status"] == "done" else ""]))
     if c["do_format"]:
         parts.append((t("Оформление"), [row(x) for x in d["format"]]))
@@ -2312,6 +2364,7 @@ def delete_requirement(me, rid):
 # ---------- шаблоны ----------
 
 app.template_filter("nonum")(export.nonum)
+app.template_filter("unquote")(__import__("urllib.parse").parse.unquote)  # адрес найденной страницы читаемым
 
 
 @app.template_filter("dt")

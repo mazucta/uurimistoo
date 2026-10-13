@@ -36,6 +36,9 @@
   {% if checks.do_language %}{{ tile('language', _('Язык и грамматика'), lang_notes|length, cls='warn' if lang_notes else '') }}{% endif %}
   {% if checks.do_sources %}{{ tile('claims', _('Спорные места'), claims|length, cls='warn' if claims else '') }}
   {{ tile('sources', _('Источники'), sources|length, cls='bad' if sources|selectattr('status', 'equalto', 'not_found')|list else '') }}{% endif %}
+  {% if checks.do_matches %}{{ tile('matches', _('Совпадения'), matches|length,
+      cls='bad' if matches|selectattr('status', 'in', ['local', 'web'])|list else '') }}{% endif %}
+  {% if checks.do_citations %}{{ tile('cites', _('Цитирование'), cites|length, cls='warn' if cites else '') }}{% endif %}
   {% if checks.do_photos %}{{ tile('photos', _('Фото и рисунки'), photos|length, cls='bad' if photos|selectattr('status', 'equalto', 'ai')|list else '') }}{% endif %}
 </nav>
 
@@ -98,6 +101,10 @@
     <li class="{{ 'pass' if s.status == 'student' else 'fail' if s.status == 'ai' else '' }}">
       <span class="mark">{{ '✓' if s.status == 'student' else '✗' if s.status == 'ai' else '·' }}</span>
       <span class="grow">{{ _(s.label) }}{% if s.note %} <span class="muted small">{{ s.note }}</span>{% endif %}</span></li>
+    {% endfor %}
+    {% for s in aisigns %}
+    <li class="fail strong"><span class="mark">✗</span>
+      <span class="grow"><b>{{ _('Сильный признак ИИ') }}:</b> {{ s.label }} <q class="muted small">{{ s.note }}</q></span></li>
     {% else %}<li class="empty">{{ _('Пока нечего показать') }}</li>{% endfor %}
   </ul>
   <p class="muted small">{{ _('Это наблюдения, а не доказательство: по тексту нельзя надёжно установить, кто его написал. Решает учитель.') }}</p>
@@ -190,6 +197,38 @@
           </div>
         </li>
         {% else %}<li class="empty">{{ _('Таких мест не нашлось') }}</li>{% endfor %}
+      </ul>
+    </section>{% endif %}
+
+    {% if checks.do_matches %}<section class="card" id="matches">
+      <div class="card-head"><h2>{{ _('Совпадения и оригинальность') }}</h2>
+        <span class="muted small">{{ _('с другими загруженными работами и с текстами в интернете') }}</span></div>
+      <ul class="notes">
+        {% for x in matches %}
+        <li>
+          {% if x.status == 'local' %}
+          <p><b>{{ x.label }}</b> — {{ _('совпадает') }} {{ x.note }} {{ _('текста этой работы') }}</p>
+          {% if x.extra %}<q>{{ x.extra }}</q>{% endif %}
+          {% else %}
+          <q>{{ x.label }}</q><p>{{ x.note }}</p>
+          <div class="note-foot">
+            <span class="badge tiny {{ 'ok' if x.status == 'web_cited' else 'danger' }}">{{ _('со ссылкой на источник') if x.status == 'web_cited' else _('без ссылки') }}</span>
+            <a class="small" href="{{ x.extra }}" target="_blank" rel="noopener noreferrer">{{ x.extra|unquote|truncate(70) }}</a>
+          </div>
+          {% endif %}
+        </li>
+        {% else %}<li class="empty">{{ _('Совпадений не нашлось') }}</li>{% endfor %}
+      </ul>
+      <p class="muted small">{{ _('В интернете модель ищет несколько самых своеобразных фраз, а не весь текст: отсутствие совпадений не доказывает оригинальность.') }}</p>
+    </section>{% endif %}
+
+    {% if checks.do_citations %}<section class="card" id="cites">
+      <div class="card-head"><h2>{{ _('Цитирование') }}</h2>
+        <span class="muted small">{{ _('цитаты со ссылками, ссылки и список источников сходятся') }}</span></div>
+      <ul class="checks">
+        {% for x in cites %}
+        <li class="fail"><span class="mark">✗</span><span class="grow">{{ x.label }} <q class="muted small">{{ x.note }}</q></span></li>
+        {% else %}<li class="pass"><span class="mark">✓</span><span class="grow">{{ _('Проблем с цитированием не нашлось') }}</span></li>{% endfor %}
       </ul>
     </section>{% endif %}
   </div>
