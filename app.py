@@ -698,7 +698,8 @@ def check_paper(pid, doc, teacher_id, lang_, data=b"", filename="", profile=None
     text, t = doc.text(), (lambda s: translate(s, lang_))
     store_findings(pid, "aisign", [{"label": t(what), "status": "fail", "note": where[:400]}
                                    for what, where in originality.ai_signs(text)] if r["do_authorship"] else [])
-    store_findings(pid, "cite", [{"label": t(what), "status": "fail", "note": where[:400]}
+    store_findings(pid, "cite", [{"label": t(what), "note": where[:400],
+                                  "status": "uncited" if what.startswith("Источник из списка ни разу") else "fail"}
                                  # цитаты и ссылки — только в основном тексте: название в аннотации не цитата
                                  for what, where in originality.citations(own_text(doc), doc.sources(), docx_read.CITATION)]
                    if r["do_citations"] else [])
@@ -1622,7 +1623,17 @@ def report(me, pid):
             "matches": findings_of(pid, "match"), "cites": findings_of(pid, "cite"), "aisigns": findings_of(pid, "aisign"),
             "profile": used["name"] if used else "",
             "score": rubric.total([m["status"] for m in marks if m["status"]]) if marks else None,
-            "max_score": rubric.MAX_SCORE, "backend": backend(me["id"])}
+            "max_score": rubric.MAX_SCORE, "backend": backend(me["id"]), "originality": originality_pct(p, pid)}
+
+
+def originality_pct(p, pid):
+    """Оригинальность в процентах: 100 минус совпавший текст — с другой работой учителя (точно, по самой
+    большой) или найденный в интернете без ссылки (по выборке фраз, поэтому это нижняя граница совпадений)."""
+    rows = findings_of(pid, "match")
+    words = len(originality.words(p["text"] or "")) or 1
+    local = max([int(re.sub(r"\D", "", m["note"]) or 0) for m in rows if m["status"] == "local"] or [0])
+    web = sum(len(originality.words(m["label"])) for m in rows if m["status"] == "web") * 100 // words
+    return max(0, 100 - max(local, web))
 
 
 @view("/papers/<int:pid>/sent", "sent.html")

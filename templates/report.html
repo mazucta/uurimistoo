@@ -21,25 +21,45 @@
 <a class="stat {{ cls }}" href="#{{ href }}"><div class="label">{{ label }}</div>
   <div class="num {{ 'word' if num is string }}">{{ num }}{% if of is not none %} <small>/ {{ of }}</small>{% endif %}</div></a>
 {% endmacro %}
+{# кольцо: доля одного показателя; значок и числа рядом, чтобы смысл не держался на одном цвете #}
+{% macro ring(href, label, pct, note='', good=80, ok=50) %}
+{% set st = 'good' if pct >= good else 'warn' if pct >= ok else 'bad' %}
+<a class="stat ring-tile" href="#{{ href }}" title="{{ label }}: {{ pct }}%{{ ' (' ~ note ~ ')' if note }}">
+  <span class="ring {{ st }}" style="--p: {{ pct }}" role="img" aria-label="{{ label }}: {{ pct }}%"><b>{{ pct }}%</b></span>
+  <span class="label">{{ label }}</span>
+  <span class="ring-note"><i aria-hidden="true">{{ '✓' if st == 'good' else '!' if st == 'warn' else '✗' }}</i> {{ note }}</span>
+</a>
+{% endmacro %}
+{% macro share(items) %}{% set done = items|selectattr('status', 'in', ['pass', 'fail'])|list %}{{ ((100 * done|selectattr('status', 'equalto', 'pass')|list|length / done|length)|round|int) if done else -1 }}{% endmacro %}
 {% macro vtext(v) %}{{ _('похоже на работу ученика') if v == 'student' else _('есть признаки текста от ИИ') if v == 'ai' else _('не понять') }}{% endmacro %}
 {% set verdict = teacher.verdict or p.verdict %}
 {% set final_score = teacher_score if teacher_score is not none else score %}
 {% macro passed(items) %}{{ items|selectattr('status', 'equalto', 'pass')|list|length }}{% endmacro %}
 {% macro failing(items) %}{{ 'bad' if items|selectattr('status', 'equalto', 'fail')|list }}{% endmacro %}
 <nav class="stats">
-  {% if score is not none and checks.do_rubric %}{{ tile('score', _('оценка учителя') if teacher_score is not none else _('Предварительная оценка'), final_score, max_score, 'accent') }}{% endif %}
+  {% if score is not none and checks.do_rubric %}{{ ring('score', _('оценка учителя') if teacher_score is not none else _('Предварительная оценка'),
+      (100 * final_score / max_score)|round|int, final_score ~ ' / ' ~ max_score) }}{% endif %}
+  {% if checks.do_format and share(format)|int >= 0 %}{{ ring('format', _('Оформление'), share(format)|int,
+      passed(format)|trim ~ ' / ' ~ format|selectattr('status', 'in', ['pass', 'fail'])|list|length) }}{% endif %}
+  {% if checks.do_req and share(reqs)|int >= 0 %}{{ ring('reqs', _('Условия учителя'), share(reqs)|int,
+      passed(reqs)|trim ~ ' / ' ~ reqs|selectattr('status', 'in', ['pass', 'fail'])|list|length) }}{% endif %}
+  {% set found = sources|selectattr('status', 'equalto', 'exists')|list|length %}
+  {% if checks.do_sources and sources %}{{ ring('sources', _('Источники найдены'), (100 * found / sources|length)|round|int, found ~ ' / ' ~ sources|length) }}{% endif %}
+  {% if checks.do_matches %}{{ ring('matches', _('Оригинальность'), originality,
+      matches|length ~ ' ' ~ _('совпад.') if matches else _('совпадений нет'), good=85, ok=60) }}{% endif %}
+  {% set uncited = cites|selectattr('status', 'equalto', 'uncited')|list|length %}
+  {% if checks.do_citations and sources %}{{ ring('cites', _('Источники со ссылками'),
+      (100 * (sources|length - uncited) / sources|length)|round|int, (sources|length - uncited) ~ ' / ' ~ sources|length) }}{% endif %}
+  {% set clean = photos|rejectattr('status', 'equalto', 'ai')|list|length %}
+  {% if checks.do_photos and photos %}{{ ring('photos', _('Фото без признаков ИИ'), (100 * clean / photos|length)|round|int,
+      clean ~ ' / ' ~ photos|length, good=100, ok=100) }}{% endif %}
   {% if checks.do_authorship and verdict %}{{ tile('authorship', _('Сам ли ученик писал работу'), vtext(verdict)|trim,
       cls='bad' if verdict == 'ai' else 'warn' if verdict != 'student' else '') }}{% endif %}
-  {% if checks.do_format %}{{ tile('format', _('Оформление'), passed(format)|int, format|length, failing(format)) }}{% endif %}
-  {% if checks.do_req %}{{ tile('reqs', _('Условия учителя'), passed(reqs)|int, reqs|length, failing(reqs)) }}{% endif %}
   {% if checks.do_sense %}{{ tile('sense', _('Смысл и содержание'), sense|length, cls='warn' if sense else '') }}{% endif %}
   {% if checks.do_language %}{{ tile('language', _('Язык и грамматика'), lang_notes|length, cls='warn' if lang_notes else '') }}{% endif %}
-  {% if checks.do_sources %}{{ tile('claims', _('Спорные места'), claims|length, cls='warn' if claims else '') }}
-  {{ tile('sources', _('Источники'), sources|length, cls='bad' if sources|selectattr('status', 'equalto', 'not_found')|list else '') }}{% endif %}
-  {% if checks.do_matches %}{{ tile('matches', _('Совпадения'), matches|length,
-      cls='bad' if matches|selectattr('status', 'in', ['local', 'web'])|list else '') }}{% endif %}
-  {% if checks.do_citations %}{{ tile('cites', _('Цитирование'), cites|length, cls='warn' if cites else '') }}{% endif %}
-  {% if checks.do_photos %}{{ tile('photos', _('Фото и рисунки'), photos|length, cls='bad' if photos|selectattr('status', 'equalto', 'ai')|list else '') }}{% endif %}
+  {% if checks.do_sources %}{{ tile('claims', _('Спорные места'), claims|length, cls='warn' if claims else '') }}{% endif %}
+  {% if checks.do_citations and cites|rejectattr('status', 'equalto', 'uncited')|list %}{{ tile('cites', _('Цитирование'),
+      cites|rejectattr('status', 'equalto', 'uncited')|list|length, cls='warn') }}{% endif %}
 </nav>
 
 {% if score is not none and checks.do_rubric %}

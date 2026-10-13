@@ -426,6 +426,10 @@ ok("цитирование и сильные признаки ИИ попада�
    any("[7]" in n for _l, _s, n in got["cite"]) and any("Цитата" in l for l, _s, _n in got["cite"])
    and any("чат-бота" in l for l, _s, _n in got["aisign"]), repr(got["cite"] + got["aisign"]))
 page = c.get(f"/papers/{mine}", headers=H)
+with A.app.test_request_context("/"):
+    orig = A.originality_pct({"text": common + " ещё десять своих слов про энергию и цены"}, mine)
+ok("кольца: оригинальность в процентах", 'class="ring' in page.get_data(as_text=True)
+   and orig == 100 - int(got["match"][0][2][:-1]), f"{orig} {got['match'][0][2]}")
 ok("отчёт с новыми разделами открывается", page.status_code == 200 and 'id="matches"' in page.get_data(as_text=True)
    and 'id="cites"' in page.get_data(as_text=True), f"код {page.status_code}")
 

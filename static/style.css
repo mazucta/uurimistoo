@@ -399,3 +399,19 @@ details.edit textarea { margin: 8px 0 0; font-size: 13px; }
 .ask-kind { margin: 0; }
 .ask-kind select { width: auto; }
 .checks li.strong { background: var(--bad-bg); border-radius: 8px; padding: 6px 8px; }
+
+/* кольца в сводке отчёта: доля показателя, процент в центре, значок и числа под кольцом */
+:root { --ring-good: #0ca30c; --ring-warn: #fab219; --ring-bad: #d03b3b; --ring-track: var(--soft); }
+a.stat.ring-tile { align-items: center; text-align: center; gap: 6px; }
+.ring { --c: var(--ring-good); position: relative; display: grid; place-items: center; width: 88px; height: 88px;
+  border-radius: 50%; background: conic-gradient(var(--c) calc(var(--p) * 1%), var(--ring-track) 0); }
+.ring::before { content: ""; position: absolute; inset: 10px; border-radius: 50%; background: var(--card); }
+.ring b { position: relative; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink); }
+.ring.warn { --c: var(--ring-warn); } .ring.bad { --c: var(--ring-bad); }
+.ring-tile .label { line-height: 1.25; }
+.ring-note { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ring-note i { font-style: normal; font-weight: 700; }
+.ring-tile:has(.ring.good) .ring-note i { color: var(--ok); }
+.ring-tile:has(.ring.warn) .ring-note i { color: var(--warn); }
+.ring-tile:has(.ring.bad) .ring-note i { color: var(--bad); }
+@media print { .ring { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
