@@ -457,6 +457,24 @@ row = con.execute("SELECT title, ai_status, ai_note FROM papers WHERE id=?", (gh
 con.close()
 ok("проверка удалённой работы не пишет в новую с тем же номером", row == ("Нова", "pending", None), repr(row))
 
+# PDF-источник: программа скачивает его сама, текст уходит в модель, источник отмечен как существующий
+from pypdf import PdfWriter as _PW
+con = sqlite3.connect(DB)
+src_paper = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at) VALUES(1,1,'PDF','текст','pending',5)").lastrowid
+con.execute("INSERT INTO findings(paper_id,kind,position,label,status) VALUES(?,'source',1,'Автор. Звіт. https://repo.ee/files/report.pdf','unclear')", (src_paper,))
+con.commit()
+A.source_pdf.fetch_pdf = lambda url: pic_buf.getvalue()  # «скан» из теста учебников
+seen_pdf = {}
+def pdf_reader(system, content, schema, **k):
+    seen_pdf["content"] = content
+    return {"summary": "ok", "sources": [{"source": 1, "status": "not_found", "supports": "unclear", "note": "x"}], "claims": []}
+A.ask_claude = pdf_reader
+A.run_ai(src_paper)
+row = con.execute("SELECT status, extra FROM findings WHERE paper_id=? AND kind='source'", (src_paper,)).fetchone()
+con.close()
+ok("PDF-источник: скачан, текст ушёл в модель, отмечен как существующий",
+   "PDF скачан программой" in seen_pdf.get("content", "") and row == ("exists", "pdf:1"), repr(row))
+
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))

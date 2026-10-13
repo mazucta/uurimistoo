@@ -299,6 +299,7 @@
         <li class="{{ s.status }}">
           <div class="source-head">{{ s.label }}</div>
           <div class="small">
+            {% if s.extra and s.extra.startswith('pdf:') %}<span class="badge info tiny">{{ _('PDF скачан и сверен') }} · {{ s.extra[4:] }} {{ _('стр.') }}</span>{% endif %}
             {% if s.status == 'exists' %}<span class="badge ok tiny">{{ _('существует') }}</span>
             {% elif s.status == 'unreachable' %}<span class="badge warn tiny">{{ _('не открылся') }}</span>
             {% elif s.status == 'not_found' %}<span class="badge danger tiny">{{ _('не найден') }}</span>

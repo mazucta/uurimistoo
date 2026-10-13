@@ -18,5 +18,7 @@ jobs:
           python images.py
           python rubric.py
           python export.py
+          python originality.py
+          python source_pdf.py
           python i18n.py
           python test_security.py
