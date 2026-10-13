@@ -85,6 +85,52 @@ def citations(text, sources, cite_pattern):
     return list(dict.fromkeys(out))  # одна и та же ссылка под каждой таблицей — одно замечание
 
 
+NO_DATE = re.compile(r"\((?:n\.\s?d\.|н\.\s?д\.|б\.\s?д\.|б\.\s?г\.|s\.\s?a\.|i\.\s?a\.)\)", re.I | re.U)
+YEAR = re.compile(r"\b(1[5-9]\d\d|20\d\d)\b")
+URL_IN = re.compile(r"https?://|www\.", re.I)
+ACCESSED = re.compile(r"дата (?:звернення|обращения|перегляду|просмотра)|vaadatud|kasutatud|accessed|retrieved|"
+                      r"переглянуто|просмотрено", re.I | re.U)
+
+
+ORDER = "абвгґдеёєжзиіїйклмнопрстуфхцчшщъыьэюя" + "abcdefghijklmnopqrsšzžtuvwõäöüxy"  # укр./рус. и эст. алфавиты
+
+
+def alpha(text):
+    """Ключ сортировки по алфавиту, а не по кодам букв: иначе украинская «і» окажется после «п»."""
+    return [ORDER.index(ch) if ch in ORDER else 1000 + ord(ch) for ch in text]
+
+
+def bibliography(sources, access_date=True):
+    """Оформление списка источников, то, что видно без стандарта: порядок, год, единообразие «без даты»,
+    дата обращения к интернет-источнику (если школа её требует), пробелы, повторы. Ответ: [(что не так, запись)]."""
+    out = []
+    keys = [re.sub(r"^[\d\s.)]+", "", s).strip().lower() for s in sources]
+    for script in (r"[a-zõäöüšž]", r"[а-яёіїєґ]"):  # по алфавиту внутри каждой азбуки: латиница и кириллица отдельно
+        group = [(k, s) for k, s in zip(keys, sources) if re.match(script, k)]
+        for (prev, _), (cur, entry) in zip(group, group[1:]):
+            if alpha(cur) < alpha(prev):
+                out.append(("Список не по алфавиту", entry[:160]))
+                break
+    marks = {m.group(0).lower().replace(" ", "")[1:2] for s in sources for m in NO_DATE.finditer(s)}
+    if len(marks) > 1:
+        out.append(("Разные обозначения «без даты» в одном списке", ", ".join(sorted(
+            {m.group(0) for s in sources for m in NO_DATE.finditer(s)}))))
+    for s in sources:
+        if not YEAR.search(s) and not NO_DATE.search(s):
+            out.append(("Нет года издания или пометки «без даты»", s[:160]))
+        if access_date and URL_IN.search(s) and not ACCESSED.search(s):
+            out.append(("У интернет-источника нет даты обращения", s[:160]))
+        if re.search(r"[^\s(\[]https?://|\s[.,;:](?!\d)|\S {2,}\S", s):
+            out.append(("Пробелы и знаки: слитно перед ссылкой, пробел перед точкой или двойной пробел", s[:160]))
+    seen = set()
+    for k, s in zip(keys, sources):
+        short = re.sub(r"\W+", "", k)[:60]
+        if short in seen:
+            out.append(("Источник повторяется в списке", s[:160]))
+        seen.add(short)
+    return out
+
+
 # Следы чат-бота: так ученик не пишет, так отвечает модель, а ученик скопировал ответ целиком.
 BOT = re.compile("|".join([
     r"\bas an ai\b", r"\bas a language model\b", r"\bi hope this helps\b", r"\bcertainly!? here(?: is|'s)\b",
@@ -136,6 +182,18 @@ if __name__ == "__main__":
     assert any(p[0].startswith("Источник из списка ни разу") and "Никто" in p[1] for p in problems), problems
     assert not any(p[0].startswith("Источник из списка ни разу") and "Hirth" in p[1] for p in problems), problems
     assert citations("Без ссылок вовсе.", srcs, cite) == []
+
+    biblio = bibliography(["1. Petrov P. Kiberport. 2020.", "2. Abels A. (n.d.)https://a.ee", "3. Борисов Б. (н.д.). Текст .",
+                           "4. Агеев А. Без года.", "5. Abels A. (n.d.)https://a.ee"])
+    kinds = [b[0] for b in biblio]
+    for need in ("Список не по алфавиту", "Разные обозначения «без даты» в одном списке", "Нет года издания или пометки «без даты»",
+                 "У интернет-источника нет даты обращения", "Источник повторяется в списке"):
+        assert need in kinds, (need, biblio)
+    assert any(k.startswith("Пробелы") for k in kinds), biblio
+    assert bibliography(["Aaa A. 2020. https://a.ee (vaadatud 01.10.2026).", "Bbb B. 2021."]) == []
+    assert bibliography(["Імас Є. 2021.", "Подрігало Л. 2024.", "Шинкарук О. 2021."]) == []  # і перед п по-украински
+    assert bibliography(["Saar S. 2020.", "Šmidt Š. 2020.", "Zeiger Z. 2020.", "Tamm T. 2020."]) == []  # эстонский порядок
+    assert not [b for b in bibliography(["Aaa A. 2020. https://a.ee"], access_date=False) if "обращения" in b[0]]
 
     signs = ai_signs("Конечно! Вот ваш реферат.\n## Введение\nТекст [вставьте название школы]​. "
                      "Слова pуcский, cвoй, нaш, тeкст.")

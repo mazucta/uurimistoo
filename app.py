@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS canva_states(
 CREATE TABLE IF NOT EXISTS findings(
   id INTEGER PRIMARY KEY, paper_id INTEGER NOT NULL REFERENCES papers(id),
   kind TEXT NOT NULL CHECK(kind IN ('format','req','source','claim','rubric','photo','sign','praise','sense','lang',
-                                   'match','cite','aisign')),
+                                   'match','cite','aisign','biblio')),
   position INTEGER NOT NULL DEFAULT 0, ref INTEGER, label TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'unclear', note TEXT NOT NULL DEFAULT '', extra TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS findings_paper ON findings(paper_id, kind, position);
@@ -119,7 +119,7 @@ with sqlite3.connect(DB) as _c:
     _c.executescript(SCHEMA)
     # ponytail: проверка идёт в потоке процесса и теряется при перезапуске; с несколькими воркерами нужна очередь
     # в старой базе у findings был список видов покороче: пересобираем таблицу, записи сохраняем
-    if "'aisign'" not in (_c.execute("SELECT sql FROM sqlite_master WHERE name='findings'").fetchone() or [""])[0]:
+    if "'biblio'" not in (_c.execute("SELECT sql FROM sqlite_master WHERE name='findings'").fetchone() or [""])[0]:
         _columns = ",".join(r[1] for r in _c.execute("PRAGMA table_info(findings)"))
         _c.executescript("ALTER TABLE findings RENAME TO findings_old;" + SCHEMA
                          + f"INSERT INTO findings({_columns}) SELECT {_columns} FROM findings_old;"
@@ -164,6 +164,7 @@ FORMAT_DEFAULTS = {
     "indent": 0.0,          # абзацный отступ в сантиметрах, ноль значит его быть не должно
     "h1": 16.0, "h2": 14.0, "h3": 12.0, "cover": 14.0, "cover_title": 20.0,
     "justify": 1, "page_numbers": 1, "sources": 1,
+    "access_date": 1,       # у интернет-источника в списке должна стоять дата обращения
 }
 
 # Что вообще проверять: учитель может смотреть только смысл и язык, а оформление не трогать.
@@ -703,6 +704,10 @@ def check_paper(pid, doc, teacher_id, lang_, data=b"", filename="", profile=None
                                  # цитаты и ссылки — только в основном тексте: название в аннотации не цитата
                                  for what, where in originality.citations(own_text(doc), doc.sources(), docx_read.CITATION)]
                    if r["do_citations"] else [])
+    store_findings(pid, "biblio", [{"label": t(what), "note": where[:400],
+                                    "status": "list" if what.startswith("Разные обозначения") else "fail"}
+                                   for what, where in originality.bibliography(doc.sources(), r.get("access_date", 1))]
+                   if r["do_citations"] else [])
     others = []
     if r["do_matches"]:  # совпадения с другими работами этого учителя: код, точно и без модели
         rows = q("SELECT id, title, filename, student, text, uploaded_at FROM papers WHERE teacher_id=? AND id<>?", teacher_id, pid)
@@ -978,7 +983,7 @@ def run_ai(pid):
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
     try:
-        p = con.execute("""SELECT p.id, p.title, p.text, p.lang, p.profile_id, p.rules, u.id AS teacher_id,
+        p = con.execute("""SELECT p.id, p.title, p.text, p.lang, p.profile_id, p.rules, p.uploaded_at, u.id AS teacher_id,
             (SELECT rules FROM profiles WHERE id=p.profile_id) AS profile_rules FROM papers p
             JOIN users u ON u.id=p.teacher_id WHERE p.id=?""", (pid,)).fetchone()
         r = paper_rules(p, {"rules": p["profile_rules"]})
@@ -1003,6 +1008,8 @@ def run_ai(pid):
                  {"type": "web_search_20260209", "name": "web_search", "max_uses": 20}] \
             if r["do_sources"] or r["do_matches"] else []
         result = ask_claude(system, content, schema, tools=tools, teacher_id=p["teacher_id"])
+        if not same_row(con, "papers", pid, "uploaded_at", p["uploaded_at"]):
+            return
 
         by_position = {r["position"]: r["id"] for r in sources}
         supports = {"yes": "подтверждает работу", "partly": "подтверждает частично",
@@ -1064,6 +1071,16 @@ def run_ai(pid):
 
 
 # ---------- материалы к уроку ----------
+
+def same_row(con, table, rid, column, value):
+    """Та ли это ещё запись. Проверка идёт минутами: работу могут удалить, а её номер получит новая работа —
+    тогда старый результат в неё писать нельзя."""
+    row = con.execute(f"SELECT {column} FROM {table} WHERE id=?", (rid,)).fetchone()
+    if not row or row[0] != value:
+        app.logger.warning("%s %s удалена во время проверки, результат не записан", table, rid)
+        return False
+    return True
+
 
 PDF_PICTURES = 24  # рисунков из PDF материала: модель вставляет картинки только по id, из PDF их не взять
 
@@ -1170,6 +1187,8 @@ def make_material(mid):
                         "действуют. Новые файлы учителя (выше) — это образцы и примеры к его просьбе."
                         " Пиши на том же языке, что и текущий материал.")
         result = ask_claude(system, content, schema, effort="medium", teacher_id=m["teacher_id"], files=files)
+        if not same_row(con, "materials", mid, "created_at", m["created_at"]):
+            return
         pictures = {f["id"] for f in files if f["mime"].startswith("image/")}
         sources = {f["id"]: f for f in files if f["mime"].startswith("image/")}
         cuts = {}
@@ -1621,6 +1640,7 @@ def report(me, pid):
             "checks": paper_rules(p, used),
             "photos": findings_of(pid, "photo"), "signs": findings_of(pid, "sign"),
             "matches": findings_of(pid, "match"), "cites": findings_of(pid, "cite"), "aisigns": findings_of(pid, "aisign"),
+            "biblio": findings_of(pid, "biblio"),
             "profile": used["name"] if used else "",
             "score": rubric.total([m["status"] for m in marks if m["status"]]) if marks else None,
             "max_score": rubric.MAX_SCORE, "backend": backend(me["id"]), "originality": originality_pct(p, pid)}
@@ -1732,6 +1752,7 @@ def report_file(me, pid):
                                         else f"«{x['label']}» — {x['extra']} ({x['note']})" for x in d["matches"]]))
     if c["do_citations"]:
         parts.append((t("Цитирование"), [f"{x['label']}: «{x['note']}»" for x in d["cites"]]))
+        parts.append((t("Оформление списка источников"), [f"{x['label']}: «{x['note']}»" for x in d["biblio"]]))
     parts.append((t("Что говорит ИИ"), [p["ai_note"] if p["ai_status"] == "done" else ""]))
     if c["do_format"]:
         parts.append((t("Оформление"), [row(x) for x in d["format"]]))
@@ -1777,12 +1798,12 @@ def add_profile(me):
 @view("/profiles/<int:prid>/rules", method="POST")
 def save_rules(me, prid):
     q1("SELECT id FROM profiles WHERE id=? AND teacher_id=?", prid, me["id"]) or abort(404)
-    d, rules = body(), {}
-    for key, default in {**FORMAT_DEFAULTS, **CHECK_DEFAULTS}.items():
+    d, rules = body(), rules_of(profile_of(me["id"], prid))  # выключатели «что проверять» живут в другой форме
+    for key, default in FORMAT_DEFAULTS.items():
         raw = (str(d.get(key, "")) or "").strip().replace(",", ".")
         if isinstance(default, str):
             rules[key] = raw[:60] or default
-        elif key in ("justify", "page_numbers", "sources") or key.startswith("do_"):
+        elif key in ("justify", "page_numbers", "sources", "access_date"):
             rules[key] = 1 if raw in ("1", "on", "true") else 0
         else:
             try:

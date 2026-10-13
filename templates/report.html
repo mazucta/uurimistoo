@@ -50,6 +50,10 @@
   {% set uncited = cites|selectattr('status', 'equalto', 'uncited')|list|length %}
   {% if checks.do_citations and sources %}{{ ring('cites', _('Источники со ссылками'),
       (100 * (sources|length - uncited) / sources|length)|round|int, (sources|length - uncited) ~ ' / ' ~ sources|length) }}{% endif %}
+  {% set bad_entries = biblio|selectattr('status', 'equalto', 'fail')|map(attribute='note')|unique|list|length %}
+  {% if checks.do_citations and sources %}{{ ring('biblio', _('Список источников оформлен'),
+      ([100 * (sources|length - bad_entries) / sources|length, 0]|max)|round|int,
+      ([sources|length - bad_entries, 0]|max) ~ ' / ' ~ sources|length) }}{% endif %}
   {% set clean = photos|rejectattr('status', 'equalto', 'ai')|list|length %}
   {% if checks.do_photos and photos %}{{ ring('photos', _('Фото без признаков ИИ'), (100 * clean / photos|length)|round|int,
       clean ~ ' / ' ~ photos|length, good=100, ok=100) }}{% endif %}
@@ -250,6 +254,17 @@
         <li class="fail"><span class="mark">✗</span><span class="grow">{{ x.label }} <q class="muted small">{{ x.note }}</q></span></li>
         {% else %}<li class="pass"><span class="mark">✓</span><span class="grow">{{ _('Проблем с цитированием не нашлось') }}</span></li>{% endfor %}
       </ul>
+    </section>
+
+    <section class="card" id="biblio">
+      <div class="card-head"><h2>{{ _('Оформление списка источников') }}</h2>
+        <span class="muted small">{{ _('порядок, годы, даты обращения, пробелы и повторы') }}</span></div>
+      <ul class="checks">
+        {% for x in biblio %}
+        <li class="fail"><span class="mark">✗</span><span class="grow">{{ x.label }} <q class="muted small">{{ x.note }}</q></span></li>
+        {% else %}<li class="pass"><span class="mark">✓</span><span class="grow">{{ _('Список источников оформлен без замечаний') }}</span></li>{% endfor %}
+      </ul>
+      <p class="muted small">{{ _('Программа проверяет то, что видно без стандарта. Соответствие APA или правилам школы целиком смотрит учитель.') }}</p>
     </section>{% endif %}
   </div>
 

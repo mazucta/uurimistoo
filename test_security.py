@@ -433,6 +433,30 @@ ok("кольца: оригинальность в процентах", 'class="r
 ok("отчёт с новыми разделами открывается", page.status_code == 200 and 'id="matches"' in page.get_data(as_text=True)
    and 'id="cites"' in page.get_data(as_text=True), f"код {page.status_code}")
 
+# «Сохранить оформление» не выключает проверки; проверка удалённой работы не пишет в новую с тем же номером
+con = sqlite3.connect(DB)
+prof = con.execute("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(1,'Оформлення','{}',1)").lastrowid
+con.commit(); con.close()
+c.post(f"/api/profiles/{prof}/rules", headers=H, json={"font": "Arial", "justify": "1"})
+with A.app.test_request_context("/"):
+    saved = A.rules_of(A.profile_of(1, prof))
+ok("профиль: «Сохранить оформление» не выключает проверки", saved["font"] == "Arial" and saved["do_sources"] == 1
+   and saved["do_citations"] == 1 and saved["access_date"] == 0, repr({k: saved[k] for k in ("font", "do_sources", "access_date")}))
+con = sqlite3.connect(DB)
+ghost = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at) VALUES(1,1,'Стара','текст','pending',1)").lastrowid
+con.commit()
+def swap_paper(system, content, schema, **k):  # пока модель думает, работу удалили, номер достался новой
+    db = sqlite3.connect(DB)
+    db.execute("DELETE FROM papers WHERE id=?", (ghost,))
+    db.execute("INSERT INTO papers(id,teacher_id,profile_id,title,ai_status,uploaded_at) VALUES(?,1,1,'Нова','pending',2)", (ghost,))
+    db.commit(); db.close()
+    return {"summary": "старий результат", "claims": [], "sources": []}
+A.ask_claude = swap_paper
+A.run_ai(ghost)
+row = con.execute("SELECT title, ai_status, ai_note FROM papers WHERE id=?", (ghost,)).fetchone()
+con.close()
+ok("проверка удалённой работы не пишет в новую с тем же номером", row == ("Нова", "pending", None), repr(row))
+
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))
