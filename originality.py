@@ -80,13 +80,35 @@ def unquoted(text):
 QUOTE = re.compile(r"[«„“\"]([^«»„“”\"]{40,400})[»“”\"]")
 
 
+PAREN = re.compile(r"\(([^()]{2,160})\)")
+NOT_KEYS = {"the", "and", "von", "der", "die", "das"}
+
+
+def source_keys(entry):
+    """Чем источник могут назвать в скобке: первое слово записи (автор, организация, сайт) и адрес сайта."""
+    head = re.sub(r"^[\d\s.)]+", "", entry).split()
+    keys = {head[0].strip(".,:;").lower()} if head else set()
+    keys |= {re.sub(r"^www\.", "", h.lower()) for h in re.findall(r"https?://([^/\s]+)", entry)}
+    return {k for k in keys if len(k) >= 3 and k not in NOT_KEYS}
+
+
+def named(chunk, keys):
+    return any(re.search(r"(?<!\w)" + re.escape(k) + r"(?!\w)", chunk.lower()) for k in keys)
+
+
 def citations(text, sources, cite_pattern):
     """Проблемы цитирования. sources: строки списка источников; cite_pattern: регулярка ссылок в тексте.
+    Ссылкой считается и скобка без года, если в ней назван источник из списка: «(liquipedia.net)», «(Esports Tower)».
     Ответ: [(что не так, фрагмент)]."""
     out = []
+    keys = [source_keys(s) for s in sources]
+    by_paren = {i for p in PAREN.findall(text) for i, k in enumerate(keys) if named(p, k)}
     for m in QUOTE.finditer(text):  # длинная цитата должна иметь ссылку рядом: в той же фразе или сразу после
+        if m.group(1).rstrip().endswith("?"):  # вопрос своей анкеты в кавычках — не цитата из источника
+            continue
         after = text[m.end():m.end() + 160]
-        if not cite_pattern.search(text[max(0, m.start() - 20):m.end()] + after.split(".")[0] + "."):
+        near_ = text[max(0, m.start() - 20):m.end()] + after.split(".")[0] + "."
+        if not cite_pattern.search(near_) and not any(named(p, k) for p in PAREN.findall(near_) for k in keys):
             out.append(("Цитата без ссылки на источник", m.group(1)[:160]))
     cited_numbers, cited_names = set(), []
     for c in cite_pattern.findall(text):
@@ -105,9 +127,9 @@ def citations(text, sources, cite_pattern):
     for c, names in cited_names:
         if lowered and not any(n in s for s in lowered for n in names):
             out.append(("Ссылка на источник, которого нет в списке", c))
-    used = {n - 1 for n in cited_numbers} | {i for i, s in enumerate(lowered) for _c, names in cited_names
-                                             if any(n in s for n in names)}
-    if cited_numbers or cited_names:  # если ссылок по тексту нет вовсе, об этом и так скажут условия учителя
+    used = {n - 1 for n in cited_numbers} | by_paren | {i for i, s in enumerate(lowered) for _c, names in cited_names
+                                                        if any(n in s for n in names)}
+    if cited_numbers or cited_names or by_paren:  # если ссылок по тексту нет вовсе, об этом и так скажут условия учителя
         for i, s in enumerate(sources):
             if i not in used:
                 out.append(("Источник из списка ни разу не упомянут в тексте", s[:160]))
@@ -214,6 +236,14 @@ if __name__ == "__main__":
     assert any(p[0].startswith("Источник из списка ни разу") and "Никто" in p[1] for p in problems), problems
     assert not any(p[0].startswith("Источник из списка ни разу") and "Hirth" in p[1] for p in problems), problems
     assert citations("Без ссылок вовсе.", srcs, cite) == []
+    # скобка без года, но с названием источника — тоже ссылка, и на цитату, и на источник
+    web = ["Liquipedia.net/counterstrike (n.d.) https://liquipedia.net/counterstrike", "LTK. (н.д.). Кіберспорт https://www.ltk.com.ua/k/",
+           "Esports Tower.(n.d.). Career. https://esportstower.com/a", "Нікого. (н.д.). https://none.ua/x"]
+    got = citations("Гравець у CS2 (liquipedia.net/counterstrike). Дані (ltk.com.ua) і (Esports Tower). «Кіберспорт став "
+                    "повноцінною професією для тисяч молодих людей» (LTK).", web, cite)
+    assert got == [("Источник из списка ни разу не упомянут в тексте", web[3])], got
+    assert citations("Питали: «Чи розглядали ви особисто можливість стати професійним кіберспортсменом?» (Hirth, 2013)."
+                     " Ще «Чи розглядали ви особисто можливість стати професійним кіберспортсменом?»", srcs[:1], cite) == []
 
     biblio = bibliography(["1. Petrov P. Kiberport. 2020.", "2. Abels A. (n.d.)https://a.ee", "3. Борисов Б. (н.д.). Текст .",
                            "4. Агеев А. Без года.", "5. Abels A. (n.d.)https://a.ee"])

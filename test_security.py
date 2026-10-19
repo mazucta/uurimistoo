@@ -458,6 +458,23 @@ row = con.execute("SELECT title, ai_status, ai_note FROM papers WHERE id=?", (gh
 con.close()
 ok("проверка удалённой работы не пишет в новую с тем же номером", row == ("Нова", "pending", None), repr(row))
 
+# Обучение на правках учителя: его баллы и комментарии идут в следующую проверку, чужие — нет
+con = sqlite3.connect(DB); con.row_factory = sqlite3.Row
+marked = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at,verdict,teacher) "
+                     "VALUES(1,1,'Оцінена','т','done',6,'ai',?)",
+                     ('{"marks": {"3": {"score": 4, "note": "теорію пов’язано з опитуванням"}}, "verdict": "student"}',)).lastrowid
+con.execute("INSERT INTO findings(paper_id,kind,position,ref,label,status) VALUES(?,'rubric',3,3,'x','2')", (marked,))
+con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at,teacher) VALUES(2,1,'Чужа','т','done',7,?)",
+            ('{"marks": {"1": {"score": 1, "note": "ЧУЖИЙ КОМЕНТАР"}}}',))
+con.commit()
+lessons = A.teacher_lessons(con, 1, -1, {**A.CHECK_DEFAULTS})
+none_ = A.teacher_lessons(con, 1, -1, {**A.CHECK_DEFAULTS, "do_rubric": 0, "do_authorship": 0})
+con.close()
+ok("правки учителя: балл, комментарий и вывод об авторстве идут в модель",
+   "ты предлагала 2, учитель поставил 4 — «теорію пов’язано з опитуванням»" in lessons
+   and "ты решила ai, учитель решил student" in lessons, lessons)
+ok("правки учителя: чужие не попадают, без оценки и авторства ничего не уходит", "ЧУЖИЙ" not in lessons and none_ == "", lessons)
+
 # PDF-источник: программа скачивает его сама, текст уходит в модель, источник отмечен как существующий
 from pypdf import PdfWriter as _PW
 con = sqlite3.connect(DB)

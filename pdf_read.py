@@ -89,6 +89,8 @@ class Doc(Paper):
         self.gap = median([g for g in self._gaps()], 20.7)
         self.paragraphs = self._paragraphs()
         self.margins = self._margins()
+        # строки идут сеткой: последняя не доходит до нижнего поля на величину до одного шага строки
+        self.slack = {"bottom": round(self.gap / PT_CM, 2)}
 
     def _read_page(self, page, number):
         pieces = []
@@ -101,6 +103,10 @@ class Doc(Paper):
         rows = {}
         for piece in pieces:
             rows.setdefault(round(piece["y"], 0), []).append(piece)
+        # номер страницы бывает и выше FOOTER (нижнее поле меньше 2 см): самая нижняя строка из одних цифр у края листа
+        lowest = min(rows, default=None)
+        number_y = lowest if lowest is not None and lowest < float(page.mediabox.height) * 0.1 \
+            and re.fullmatch(r"[\s\-–—]*\d{1,3}[\s\-–—]*", "".join(p["text"] for p in rows[lowest])) else None
         for y, row in sorted(rows.items(), reverse=True):
             row.sort(key=lambda p: p["x"])
             text = "".join(p["text"] for p in row).strip()
@@ -111,7 +117,7 @@ class Doc(Paper):
             line = {"page": number, "y": y, "x": round(row[0]["x"], 1),
                     "x2": round(row[-1]["x"] + text_width(row[-1]["text"], row[-1]["size"]), 1),
                     "size": biggest["size"], "font": font, "bold": "bold" in font.lower(), "text": text}
-            (self.footers if y < FOOTER else self.lines).append(line)
+            (self.footers if y < FOOTER or y == number_y else self.lines).append(line)
 
     def _gaps(self):
         for a, b in zip(self.lines, self.lines[1:]):
@@ -203,7 +209,7 @@ class Doc(Paper):
     def page_numbering(self):
         """Номер страницы это число в колонтитуле. Выравнивание считаем по колонке текста."""
         middle = (self.left + self.right) / 2
-        numbers = [l for l in self.footers if l["text"].strip().isdigit()]
+        numbers = [l for l in self.footers if l["text"].strip(" -–—").isdigit()]
         if not numbers:
             return None
         line = numbers[0]
@@ -274,4 +280,8 @@ if __name__ == "__main__":
     assert d.page_numbering() == "center", d.page_numbering()
     assert len(d.citations()) == 1 and d.sources() == ["Ivanov I. Energiya zdanii. 2021. https://err.ee/uurimus"], d.sources()
     assert d.cover()[0]["size"] == 20 and d.cover()[1]["size"] == 14
+    # номер на 1,9 см от низа (выше FOOTER): всё равно номер страницы, а не хвост последнего абзаца
+    d = read(pdf([[(left, 700, 12, False, "tekst"), (left, 680, 12, False, "konec stranicy.")],
+                  [(left, 700, 12, False, "tekst"), (273, 54, 12, False, "- 2 -")]]))
+    assert d.page_numbering() == "center" and all("2" not in l["text"] for l in d.lines), (d.footers, d.lines)
     print("ok")

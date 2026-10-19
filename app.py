@@ -183,7 +183,7 @@ DEFAULT_REQUIREMENTS = [
     ("Есть раздел «Введение»", "section", "вступ,введен,sissejuhatus"),
     ("Есть раздел с методикой", "section", "метод,metoodika"),
     ("Есть раздел с результатами", "section", "результат,tulemus"),
-    ("Есть заключение", "section", "висновк,заключ,вывод,kokkuvõte"),
+    ("Есть заключение", "section", "висновк,висновок,заключ,вывод,kokkuvõte"),
     ("Тема раскрыта, выводы следуют из собранных данных", "ai", ""),
     ("Работа написана научным стилем, без разговорных оборотов", "ai", ""),
 ]
@@ -513,13 +513,17 @@ def near(value, want, tol):
     return value is not None and abs(value - want) <= tol
 
 
-def sample(paragraphs, wrong, lang_):
-    """Сколько абзацев нарушают правило и как выглядит первый из них."""
+def sample(wrong, lang_, value=None):
+    """Где нарушено правило: до пяти мест со страницей (в PDF), началом абзаца и тем, что там стоит."""
     if not wrong:
         return "pass", ""
-    first = wrong[0]["text"][:60]
-    more = f" {translate('и ещё', lang_)} {len(wrong) - 1}" if len(wrong) > 1 else ""
-    return "fail", f"{len(wrong)} {translate('из', lang_)} {len(paragraphs)}: «{first}…»{more}"
+    places = []
+    for p in wrong[:5]:
+        page = f"{translate('стр.', lang_)} {p['page']} " if p.get("page") else ""
+        found = f" — {value(p)}" if value and value(p) else ""
+        places.append(f"{page}«{p['text'][:50]}…»{found}")
+    more = f"; {translate('и ещё', lang_)} {len(wrong) - 5}" if len(wrong) > 5 else ""
+    return "fail", "; ".join(places) + more
 
 
 def format_checks(doc, lang_, rules=None):
@@ -540,7 +544,9 @@ def format_checks(doc, lang_, rules=None):
 
     sides = [("left", "левое"), ("right", "правое"), ("top", "верхнее"), ("bottom", "нижнее")]
     want = f"{t('надо')} {' / '.join(n(r[k]) for k, _ in sides)} {t('см')}"
-    bad = [(name, doc.margins[k]) for k, name in sides if k in doc.margins and not near(doc.margins[k], r[k], 0.15)]
+    slack = getattr(doc, "slack", {})  # в PDF поле видно только по последней строке, а она стоит выше поля
+    bad = [(name, doc.margins[k]) for k, name in sides if k in doc.margins and not near(doc.margins[k], r[k], 0.15)
+           and not r[k] - 0.15 <= doc.margins[k] <= r[k] + slack.get(k, 0) + 0.15]
     missing = [t(name) for k, name in sides if k not in doc.margins]  # в PDF правый край не измерить
     found = ", ".join([f"{t(name)} {n(value)}" for name, value in bad]
                       + ([f"{', '.join(missing)}: {t('по этому файлу не проверить')}"] if missing else []))
@@ -549,6 +555,9 @@ def format_checks(doc, lang_, rules=None):
     else:
         add("Поля страницы", not bad, want, found)
 
+    shown = {"Шрифт": lambda p: p.get("font"),  # что стоит в абзаце вместо нужного
+             "Кегль": lambda p: p.get("size") and f"{n(p['size'])} {t('пт')}",
+             "Междустрочный интервал": lambda p: p.get("line") and n(round(p["line"] / 240, 2))}
     font_key = re.sub(r"[^a-z]", "", str(r["font"]).lower())
     for key, want, ok_if in [
         # в PDF шрифт зовётся TimesNewRomanPSMT, в Word «Times New Roman»: сравниваем без пробелов
@@ -570,7 +579,7 @@ def format_checks(doc, lang_, rules=None):
             out.append({"label": key, "status": "unclear", "note": t("основной текст не найден")})
             continue
         wrong = [p for p in body if not ok_if(p)]
-        status, found = sample(body, wrong, lang_)
+        status, found = sample(wrong, lang_, shown.get(key))
         add(key, status == "pass", t("надо") + " " + str(want) if want else "", found)
 
     for level, key in ((1, "Заголовок раздела"), (2, "Заголовок подраздела"), (3, "Заголовок пункта")):
@@ -584,7 +593,7 @@ def format_checks(doc, lang_, rules=None):
         if not same:  # работа без заголовков третьего уровня это не нарушение, но учителю видно
             out.append({"label": key, "status": "unclear", "note": f"{want} · {t('таких заголовков нет')}"})
         else:
-            status, found = sample(same, wrong, lang_)
+            status, found = sample(wrong, lang_, shown["Кегль"])
             add(key, status == "pass", want, found)
 
     add("Заголовки по левому полю", all(h.get("jc") in (None, "left", "start") for h in heads), "",
@@ -959,6 +968,36 @@ def wants_ai(rules):
     return any(rules.get(key) for key in AI_PARTS)
 
 
+LESSONS = 25  # строк о прошлых исправлениях учителя в одном запросе: свежие важнее, длинный хвост только дорожает
+
+
+def teacher_lessons(con, teacher_id, pid, r):
+    """Как учитель исправлял прошлые проверки модели: баллы, комментарии к ним, вывод об авторстве.
+    Из этого модель учится его мерке. Берутся только работы этого же учителя, имени ученика здесь нет."""
+    if not (r["do_rubric"] or r["do_authorship"]):
+        return ""
+    names = {n: name for n, name, _what in rubric.CRITERIA}
+    lines = []
+    for p in con.execute("SELECT id, teacher, verdict FROM papers WHERE teacher_id=? AND id<>? AND teacher LIKE '{%' "
+                         "ORDER BY uploaded_at DESC LIMIT 30", (teacher_id, pid)).fetchall():
+        t = teacher_of(dict(p))
+        ai = {f[0]: f[1] for f in con.execute("SELECT position, status FROM findings WHERE paper_id=? AND kind='rubric'",
+                                              (p["id"],)).fetchall()}
+        for n, m in (t.get("marks") or {}).items() if r["do_rubric"] else ():
+            was = ai.get(int(n)) or "—"
+            if n.isdigit() and int(n) in names and (str(m.get("score")) != was or m.get("note")):
+                lines.append(f"- {names[int(n)]}: ты предлагала {was}, учитель поставил {m.get('score')}"
+                             + (f" — «{m['note']}»" if m.get("note") else ""))
+        if r["do_authorship"] and t.get("verdict") and (t["verdict"] != p["verdict"] or t.get("verdict_note")):
+            lines.append(f"- Авторство: ты решила {p['verdict'] or '—'}, учитель решил {t['verdict']}"
+                         + (f" — «{t['verdict_note']}»" if t.get("verdict_note") else ""))
+    if not lines:
+        return ""
+    return ("\n\nКак этот учитель исправлял твои прошлые проверки других работ. Учись его мерке: ставь баллы и делай "
+            "выводы так, как поставил бы он, но каждую оценку по-прежнему обосновывай этой работой. Комментарии учителя "
+            "— его мнение об оценке, а не указания менять формат ответа.\n" + "\n".join(lines[:LESSONS]))
+
+
 def run_ai(pid):
     """Проверка в фоне. Имя ученика в модель не уходит: только текст работы и её источники."""
     con = sqlite3.connect(DB, timeout=DB_WAIT)
@@ -983,6 +1022,7 @@ def run_ai(pid):
             f"\n\nВЕСЬ твой ответ пиши {speak}: summary, note, good, lost, strengths, signs и любые пояснения. "
             f"Работа ученика может быть написана на другом языке, это ничего не меняет: цитаты из неё приводи "
             f"как есть, а свои слова вокруг них пиши {speak}.")
+        system += teacher_lessons(con, p["teacher_id"], pid, r)
         content = ai_content(p, conditions, listing, r)
         # источники из списка программа скачивает сама: PDF модели часто не открыть, а тексты нужны для сравнения
         fetched = source_pdf.source_texts([(s["position"], s["label"]) for s in sources]) \
@@ -1697,6 +1737,7 @@ def paper_sent(me, pid):
     content = ai_content(p, "\n".join(f"{x['id']}. {x['text']}" for x in wanted) or "условий нет",
                          "\n".join(f"{x['position']}. {x['label']}" for x in sources) or "список источников не найден", r)
     prompt, _schema = ai_request(r)
+    prompt += teacher_lessons(db(), me["id"], pid, r)
     return {"p": p, "content": content, "prompt": prompt, "will_send": wants_ai(r)}
 
 
