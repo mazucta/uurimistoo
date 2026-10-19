@@ -86,6 +86,16 @@
     {% endif %}
   </div>
 
+  <h3 class="sub-head">{{ _('Заполнить профиль из файла') }}
+    <span class="muted small">{{ _('документ школы с требованиями: ассистент разберёт его и внесёт условия и оформление заново') }}</span></h3>
+  {% if request.args.imported %}<div class="banner info">{{ _('Из файла внесено условий:') }} {{ request.args.imported }}.
+    {{ _('Оформление выставлено по документу, чего в нём нет — по умолчанию. Проверьте ниже.') }}</div>{% endif %}
+  <form class="rule-form" method="post" action="/profiles/{{ profile.id }}/import" enctype="multipart/form-data"
+        onsubmit="if (!confirm('{{ _('Условия и оформление этого профиля заменятся данными из файла. Продолжить?') }}')) return false; this.querySelector('button').disabled = true; this.querySelector('button').textContent = '{{ _('Разбираю файл, это до минуты…') }}'">
+    <input type="file" name="file" accept=".docx,.pdf,.txt,.md,image/*" required>
+    <button class="btn">{{ _('Разобрать файл') }}</button>
+  </form>
+
   <h3 class="sub-head">{{ _('Что проверять') }}</h3>
   <form class="switches checks-form" method="post" action="/profiles/{{ profile.id }}/checks">
     {% for key, name in [('do_format', _('Оформление')), ('do_req', _('Условия учителя')),

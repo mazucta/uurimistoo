@@ -443,6 +443,35 @@ with A.app.test_request_context("/"):
     saved = A.rules_of(A.profile_of(1, prof))
 ok("профиль: «Сохранить оформление» не выключает проверки", saved["font"] == "Arial" and saved["do_sources"] == 1
    and saved["do_citations"] == 1 and saved["justify"] == 0, repr({k: saved[k] for k in ("font", "do_sources", "justify")}))
+# Профиль из файла школы: модель разбирает требования, старые условия профиля заменяются, выключатели остаются
+def school_rules(system, content, schema, **k):
+    seen["import"] = [f["name"] for f in k.get("files") or []]
+    return {"format": {**{key: -1 for key in A.IMPORT_NUMBERS}, "size": 14, "line": 1, "left": 999,
+                       "font": "Arial", "justify": "no", "page_numbers": "unknown", "sources": "yes"},
+            "requirements": [{"text": "Обсяг від 10 сторінок", "rule": "chars_min", "value": "20 000 знаків"},
+                             {"text": "Є висновки", "rule": "section", "value": "висновк,kokkuvõte"},
+                             {"text": "Є гіпотеза", "rule": "ai", "value": "щось"},
+                             {"text": "Кривий", "rule": "sources_min", "value": "багато"},
+                             {"text": "", "rule": "ai", "value": ""}]}
+A.ask_claude = school_rules
+con = sqlite3.connect(DB); con.execute("DELETE FROM limits"); con.commit(); con.close()
+doc_up = lambda headers, data, name: c.post(f"/api/profiles/{prof}/import", headers=headers,
+                                           data={"file": (_io.BytesIO(data), name)}, content_type="multipart/form-data")
+bad_file = doc_up(H, b"MZ\x90 exe", "vimogi.exe").status_code
+alien_import = doc_up(other, "Вимоги".encode(), "vimogi.txt").status_code
+got = doc_up(H, "Вимоги школи: 10 сторінок, Arial 14.".encode(), "vimogi.txt").json
+with A.app.test_request_context("/"):
+    after = A.rules_of(A.profile_of(1, prof))
+    reqs = [(x["text"], x["rule"], x["value"]) for x in A.requirements_of(1, prof)]
+ok("профиль из файла: чужой профиль и не тот файл отклонены", (bad_file, alien_import) == (400, 404), f"{bad_file} {alien_import}")
+ok("профиль из файла: оформление по документу, остальное по умолчанию, выключатели прежние",
+   got.get("imported") == 4 and after["size"] == 14 and after["line"] == 1 and after["left"] == 3.0 and after["font"] == "Arial"
+   and after["justify"] == 0 and after["page_numbers"] == 1 and after["do_sources"] == 1 and seen["import"] == ["vimogi.txt"],
+   repr({k: after[k] for k in ("size", "line", "left", "font", "justify")}))
+ok("профиль из файла: условия заменены, числа и правила проверены",
+   reqs == [("Обсяг від 10 сторінок", "chars_min", "20000"), ("Є висновки", "section", "висновк,kokkuvõte"),
+            ("Є гіпотеза", "ai", ""), ("Кривий", "ai", "")], repr(reqs))
+
 con = sqlite3.connect(DB)
 ghost = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at) VALUES(1,1,'Стара','текст','pending',1)").lastrowid
 con.commit()
