@@ -15,7 +15,8 @@
 {% endif %}
 
 <section class="card">
-  <div class="card-head"><h2>{{ _('Новая проверка') }}</h2></div>
+  <div class="card-head"><h2>{{ _('Новая проверка') }}</h2>
+    <a class="btn small" href="/papers?profile={{ profile.id if profile else '' }}#profile">⚙ {{ _('Условия и настройки проверки') }}</a></div>
   <form class="upload" method="post" action="/papers" enctype="multipart/form-data">
     <label class="field file"><span><i class="step">1</i>{{ _('Файл работы, .docx или .pdf') }}</span>
       <input type="file" name="file" accept=".docx,.pdf" required></label>
@@ -124,7 +125,6 @@
       <label><input type="checkbox" name="justify" value="1" {{ 'checked' if settings.justify }}> {{ _('Текст по ширине') }}</label>
       <label><input type="checkbox" name="page_numbers" value="1" {{ 'checked' if settings.page_numbers }}> {{ _('Нумерация страниц') }}</label>
       <label><input type="checkbox" name="sources" value="1" {{ 'checked' if settings.sources }}> {{ _('Список источников отдельным разделом') }}</label>
-      <label><input type="checkbox" name="access_date" value="1" {{ 'checked' if settings.access_date }}> {{ _('Дата обращения у интернет-источников') }}</label>
     </div>
     <button class="btn">{{ _('Сохранить оформление') }}</button>
     <span class="muted small">{{ _('Пустое поле вернёт школьное значение.') }}</span>

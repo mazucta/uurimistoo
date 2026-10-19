@@ -179,9 +179,8 @@ class Doc(Paper):
         ppr = p.find(W + "pPr")
         direct = para_props(ppr)
         style = self._style(direct.get("style"))
-        runs = [(("".join(t.text or "" for t in r.iter(W + "t"))),
-                 {**run_props(ppr.find(W + "rPr") if ppr is not None else None), **run_props(r.find(W + "rPr"))})
-                for r in p.findall(W + "r")]
+        runs = [(run_text(r), {**run_props(ppr.find(W + "rPr") if ppr is not None else None), **run_props(r.find(W + "rPr"))})
+                for r in runs_of(p)]
         text = "".join(t for t, _ in runs)
         sized = [(len(t.strip()), rp) for t, rp in runs if t.strip()]
         main = max(sized, key=lambda x: x[0])[1] if sized else {}
@@ -212,6 +211,25 @@ class Doc(Paper):
                 jc = attr(p.find(W + "pPr/" + W + "jc") if p is not None else None, "val")
                 return jc or "left"
         return None
+
+# Куски текста лежат не только прямо в абзаце: адрес становится гиперссылкой, правка в режиме
+# исправлений лежит в w:ins, поле и элемент управления оборачивают свои куски. Удалённое (w:del) не берём.
+WRAPPERS = {W + tag for tag in ("hyperlink", "ins", "moveTo", "smartTag", "fldSimple", "customXml", "sdt", "sdtContent")}
+BREAKS = {W + tag for tag in ("tab", "br", "cr")}
+
+
+def runs_of(el):
+    for child in el:
+        if child.tag == W + "r":
+            yield child
+        elif child.tag in WRAPPERS:
+            yield from runs_of(child)
+
+
+def run_text(r):
+    """Текст куска; табуляция и перенос строки становятся пробелом, иначе слова слипаются."""
+    return "".join(c.text or "" if c.tag == W + "t" else " " if c.tag in BREAKS else "" for c in r)
+
 
 def split_numbered(entries):
     """Список «1. … 2. …» разбираем по номерам: в PDF строки источников рвутся и слипаются."""
@@ -265,4 +283,11 @@ if __name__ == "__main__":
     assert d.sources() == ["Иванов И. Энергия зданий. 2021. https://err.ee/uurimus"], d.sources()
     assert d.page_numbering() is None
     assert not any(p["in_table"] for p in d.paragraphs)
+    # адрес-гиперссылка, перенос строки, вставка и удаление в режиме исправлений
+    d = read(make('<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Список джерел</w:t></w:r></w:p>'
+                  '<w:p><w:r><w:t>1. Petrov P. Article. 2020. </w:t></w:r><w:hyperlink><w:r><w:t>https://a.ee/x.pdf</w:t></w:r>'
+                  '</w:hyperlink></w:p><w:p><w:r><w:t>Перший</w:t></w:r><w:r><w:br/><w:t>другий</w:t></w:r>'
+                  '<w:ins><w:r><w:t> вставка</w:t></w:r></w:ins><w:del><w:r><w:delText> стерто</w:delText></w:r></w:del></w:p>', styles))
+    assert d.sources()[0] == "Petrov P. Article. 2020. https://a.ee/x.pdf", d.sources()
+    assert d.paragraphs[2]["text"] == "Перший другий вставка", d.paragraphs[2]
     print("ok")

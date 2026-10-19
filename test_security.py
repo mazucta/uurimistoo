@@ -3,7 +3,7 @@
 Запуск: `.venv/bin/python test_security.py`. Работает на своей временной базе,
 внешних запросов не делает: потоки проверки подменяются заглушкой.
 """
-import os, sqlite3, sys, tempfile
+import os, sqlite3, sys, tempfile, time
 
 DB = os.path.join(tempfile.mkdtemp(), "test.db")
 os.environ["DB"], os.environ["DEMO"] = DB, "0"
@@ -114,6 +114,7 @@ ok("очередь: задача поднята один раз, потом ош
 # Срок хранения: старая работа уходит вместе с отчётом, свежая остаётся
 old = con.execute("INSERT INTO papers(teacher_id,profile_id,uploaded_at) VALUES(1,1,1)").lastrowid
 con.execute("INSERT INTO findings(paper_id,kind,label) VALUES(?,'format','x')", (old,)); con.commit()
+A._purged_at = 0  # чистка идёт не чаще раза в час: здесь время пришло
 ids = [p["id"] for p in c.get("/api/papers", headers=H).json["papers"]]
 left = con.execute("SELECT COUNT(*) FROM findings WHERE paper_id=?", (old,)).fetchone()[0]
 ok("хранение: работа старше срока удалена с отчётом", old not in ids and pid in ids and left == 0, f"{ids} {left}")
@@ -437,11 +438,11 @@ ok("отчёт с новыми разделами открывается", page.
 con = sqlite3.connect(DB)
 prof = con.execute("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(1,'Оформлення','{}',1)").lastrowid
 con.commit(); con.close()
-c.post(f"/api/profiles/{prof}/rules", headers=H, json={"font": "Arial", "justify": "1"})
+c.post(f"/api/profiles/{prof}/rules", headers=H, json={"font": "Arial", "justify": "0"})
 with A.app.test_request_context("/"):
     saved = A.rules_of(A.profile_of(1, prof))
 ok("профиль: «Сохранить оформление» не выключает проверки", saved["font"] == "Arial" and saved["do_sources"] == 1
-   and saved["do_citations"] == 1 and saved["access_date"] == 0, repr({k: saved[k] for k in ("font", "do_sources", "access_date")}))
+   and saved["do_citations"] == 1 and saved["justify"] == 0, repr({k: saved[k] for k in ("font", "do_sources", "justify")}))
 con = sqlite3.connect(DB)
 ghost = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at) VALUES(1,1,'Стара','текст','pending',1)").lastrowid
 con.commit()
@@ -463,7 +464,7 @@ con = sqlite3.connect(DB)
 src_paper = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at) VALUES(1,1,'PDF','текст','pending',5)").lastrowid
 con.execute("INSERT INTO findings(paper_id,kind,position,label,status) VALUES(?,'source',1,'Автор. Звіт. https://repo.ee/files/report.pdf','unclear')", (src_paper,))
 con.commit()
-A.source_pdf.fetch_pdf = lambda url: pic_buf.getvalue()  # «скан» из теста учебников
+A.source_pdf.fetch = lambda url: ("pdf", pic_buf.getvalue(), "")  # «скан» из теста учебников
 seen_pdf = {}
 def pdf_reader(system, content, schema, **k):
     seen_pdf["content"] = content
@@ -474,6 +475,87 @@ row = con.execute("SELECT status, extra FROM findings WHERE paper_id=? AND kind=
 con.close()
 ok("PDF-источник: скачан, текст ушёл в модель, отмечен как существующий",
    "PDF скачан программой" in seen_pdf.get("content", "") and row == ("exists", "pdf:1"), repr(row))
+
+# Оригинальность: кусок, переписанный из источника без кавычек, и работа на ту же тему из сети
+import zipfile as _z
+W_ = A.docx_read.W[1:-1]
+copied = ("Отрицательные цены на электроэнергию возникают в часы когда солнечные станции производят больше энергии "
+          "чем может потребить сеть и производитель доплачивает за отбор мощности")
+para = lambda text, style="": (f'<w:p>{f"<w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr>" if style else ""}'
+                               f'<w:r><w:t>{text}</w:t></w:r></w:p>')
+_buf = _io.BytesIO()
+with _z.ZipFile(_buf, "w") as z:
+    z.writestr("word/document.xml", f'<w:document xmlns:w="{W_}"><w:body>' + para("Вступ", "H") + para(
+        "Моя думка про ринок Естонії зовсім інша. " + copied + " (Elering, 2024). Цитата «" + copied + "» (Elering, 2024).")
+        + para("Список використаних джерел", "H") + "<w:p><w:r><w:t>1. Elering. Звіт. 2024. </w:t></w:r><w:hyperlink><w:r>"
+        "<w:t>https://elering.ee/report</w:t></w:r></w:hyperlink></w:p></w:body></w:document>")
+    z.writestr("word/styles.xml", f'<w:styles xmlns:w="{W_}"><w:style w:styleId="H"><w:name w:val="heading 1"/></w:style></w:styles>')
+con = sqlite3.connect(DB)
+orig = con.execute("INSERT INTO papers(teacher_id,profile_id,title,filename,text,data,ai_status,uploaded_at) "
+                   "VALUES(1,1,'Ціни','w.docx','текст',?,'pending',6)", (_buf.getvalue(),)).lastrowid
+con.execute("INSERT INTO findings(paper_id,kind,position,label,status) VALUES(?,'source',1,'Elering. Звіт. 2024. https://elering.ee/report','unclear')", (orig,))
+con.commit()
+pages_ = {"https://elering.ee/report": "<p>Вступ звіту. " + copied + ". Далі інше.</p>",
+          "https://school.ee/uurimus": "<article>Чужа робота: " + copied + "</article>",
+          "https://other.ee/clean": "<p>Зовсім інший текст без жодного збігу з роботою учня про щось своє</p>"}
+A.source_pdf.fetch = lambda url: ("html", pages_[url].encode(), "utf-8") if url in pages_ else None
+seen_html = {}
+A.ask_claude = lambda system, content, schema, **k: seen_html.update(content=content) or {"summary": "ok", "claims": [], "matches": [],
+    "sources": [{"source": 1, "status": "not_found", "supports": "unclear", "note": "web_fetch: 403"}],
+    "similar": [{"title": "Uurimus", "url": "https://school.ee/uurimus"}, {"title": "Чисто", "url": "https://other.ee/clean"},
+                {"title": "Свій же", "url": "https://elering.ee/report"}, {"title": "x", "url": "javascript:alert(1)"}]}
+A.run_ai(orig)
+rows = con.execute("SELECT status, ref, label, note, extra FROM findings WHERE paper_id=? AND kind='match' ORDER BY position", (orig,)).fetchall()
+src_status, src_extra = con.execute("SELECT status, extra FROM findings WHERE paper_id=? AND kind='source'", (orig,)).fetchone()
+con.close()
+by = {r[0]: r for r in rows}
+ok("оригинальность: переписанное из источника без кавычек найдено, цитата в кавычках — нет",
+   "source" in by and by["source"][1] == 1 and 30 <= int(by["source"][3][:-1]) <= 70 and src_extra == "html", repr(rows))
+ok("страница-источник: скачана программой, текст ушёл в модель, «не найден» от модели не ставится",
+   src_status == "exists" and "страница скачана программой" in seen_html.get("content", ""), src_status)
+ok("оригинальность: работы на ту же тему сравнены, свой источник и не-http пропущены",
+   [r[2] for r in rows if r[0] == "similar"] == ["Uurimus", "Чисто"] and rows[-1][3] == "0%"
+   and rows[1][4].startswith("https://school.ee/uurimus\nотрицательные"), repr(rows))
+page = c.get(f"/papers/{orig}?lang=uk", headers=H)
+ok("оригинальность: отчёт показывает совпадения и процент", page.status_code == 200
+   and "Переписано з джерела" in page.text and "Робота на ту саму тему" in page.text and "https://school.ee/uurimus" in page.text,
+   page.status_code)
+with A.app.test_request_context("/"):
+    pct = A.originality_pct({"text": "слово " * 40}, orig)
+ok("оригинальность: процент учитывает источники и сеть", pct < 100, pct)
+ok("оригинальность: отчёт выгружается в .docx", c.get(f"/papers/{orig}/file", headers=H).status_code == 200)
+
+# Версии одной работы: прошлая версия того же ученика — отдельная строка, а не списывание; копия у другого — списывание
+def paper_docx(body):
+    b = _io.BytesIO()
+    with _z.ZipFile(b, "w") as z:
+        z.writestr("word/document.xml", f'<w:document xmlns:w="{W_}"><w:body>' + para("Вступ", "H") + para(body)
+                   + "</w:body></w:document>")
+        z.writestr("word/styles.xml", f'<w:styles xmlns:w="{W_}"><w:style w:styleId="H"><w:name w:val="heading 1"/></w:style></w:styles>')
+    return b.getvalue()
+A.ask_claude = lambda system, content, schema, **k: {"summary": "ok"}
+draft = ("Мій перший варіант дослідження про те, як учні гімназії в Тарту обирають гуртки після уроків і скільки "
+         "часу на тиждень вони проводять у шкільній бібліотеці, спортзалі та музичному класі. Тут я пишу про свої висновки.")
+up = lambda body, who: c.post("/api/papers", headers=H, data={"profile": "1", "student": who,
+                                                            "file": (_io.BytesIO(paper_docx(body)), "v.docx")}).json["id"]
+v1 = up(draft, "Марія Т.")
+v2 = up(draft + " Новий розділ про те як я сама опитала тридцять однокласників у школі.", " марія т. ")
+v3 = up(draft, "Інший учень")
+con = sqlite3.connect(DB)
+m2, m3 = (con.execute("SELECT status, ref, note, extra FROM findings WHERE paper_id=? AND kind='match' ORDER BY position",
+                      (x,)).fetchall() for x in (v2, v3))
+con.close()
+ok("версии: прошлая версия того же ученика сравнена отдельно, новое показано, в списывание не попала",
+   m2 and m2[0][:2] == ("previous", v1) and 0 < int(m2[0][2][:-1]) < 100 and "опитала тридцять" in m2[0][3]
+   and len(m2) == 1, repr(m2))
+ok("версии: такая же работа у другого ученика — совпадение", [r[0] for r in m3][:1] == ["local"]
+   and "previous" not in [r[0] for r in m3], repr(m3))
+page = c.get(f"/papers/{v2}?lang=uk", headers=H)
+with A.app.test_request_context("/"):
+    pct = A.originality_pct({"text": draft}, v2)
+ok("версии: отчёт выгружается в .docx", c.get(f"/papers/{v2}/file", headers=H).status_code == 200)
+ok("версии: отчёт показывает прошлую версию, оригинальность от неё не падает",
+   "Попередня версія цієї роботи" in page.text and f'href="/papers/{v1}"' in page.text and pct == 100, pct)
 
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
 con = sqlite3.connect(DB)
@@ -522,6 +604,29 @@ lisa_page = c.get("/api/papers", headers={"Authorization": "Bearer " + c.post("/
     json={"login": "lisa", "password": "vtoroi-parol"}).json["token"]}).json
 ok("ссылку видит только учитель из настроек", lisa_page["share_link"].endswith("/k/sekret-ssylki")
    and mine["share_link"] == "", repr(lisa_page.get("share_link")))
+
+# повторная проверка во время идущей: список источников не меняется под ногами у модели
+con = sqlite3.connect(DB)
+con.execute("UPDATE papers SET ai_status='pending' WHERE id=?", (pid,))
+con.execute("INSERT INTO findings(paper_id,kind,position,label) VALUES(?,'source',1,'Старий А. 2019.')", (pid,)); con.commit()
+before = con.execute("SELECT id FROM findings WHERE paper_id=? AND kind='source' ORDER BY id", (pid,)).fetchall()
+c.post(f"/api/papers/{pid}/sources", headers=H, json={"sources": "Новий А. 2020.\nІнший Б. 2021."})
+c.post(f"/api/papers/{pid}/recheck", headers=H, json={})
+after = con.execute("SELECT id FROM findings WHERE paper_id=? AND kind='source' ORDER BY id", (pid,)).fetchall()
+edit = con.execute("SELECT sources_edit FROM papers WHERE id=?", (pid,)).fetchone()[0]
+con.execute("UPDATE papers SET ai_status='done' WHERE id=?", (pid,)); con.commit()
+ok("пока идёт проверка, «заново» и правка источников ничего не трогают", before == after and edit == "" and len(before) == 1,
+   repr((before, after, edit)))
+
+# срок хранения: файлы готового материала живут вместе с ним
+old_t = time.time() - (A.RETENTION_DAYS + 1) * 86400
+mat = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,created_at) VALUES(1,'slides','старий','done',?)", (old_t,)).lastrowid
+kept = con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,created_at) VALUES(1,?,'a.png','image/png',x'00',?)", (mat, old_t)).lastrowid
+gone = con.execute("INSERT INTO uploads(teacher_id,name,mime,data,created_at) VALUES(1,'b.png','image/png',x'00',?)", (old_t,)).lastrowid
+A.purge_old(con); con.commit()
+left = {r[0] for r in con.execute("SELECT id FROM uploads WHERE id IN (?,?)", (kept, gone))}
+con.close()
+ok("срок хранения не стирает картинки готового материала", left == {kept}, repr(left))
 
 # SEC-07 и SEC-04
 resp = c.get(f"/api/papers/{pid}", headers=H)

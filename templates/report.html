@@ -12,7 +12,7 @@
   <div class="row-meta">
     <a class="btn" href="/papers/{{ p.id }}/file">{{ _('Скачать отчёт') }}</a>
     <button type="button" class="btn" onclick="print()">{{ _('Печать или PDF') }}</button>
-    <form method="post" action="/papers/{{ p.id }}/recheck"><button class="btn">{{ _('Проверить заново') }}</button></form>
+    {% if p.ai_status != 'pending' %}<form method="post" action="/papers/{{ p.id }}/recheck"><button class="btn">{{ _('Проверить заново') }}</button></form>{% endif %}
     <form method="post" action="/papers/{{ p.id }}/delete" onsubmit="return confirm('{{ _('Удалить проверку вместе с файлом?') }}')"><button class="btn-link danger">{{ _('Удалить') }}</button></form>
   </div>
 </div>
@@ -226,13 +226,26 @@
 
     {% if checks.do_matches %}<section class="card" id="matches">
       <div class="card-head"><h2>{{ _('Совпадения и оригинальность') }}</h2>
-        <span class="muted small">{{ _('с другими загруженными работами и с текстами в интернете') }}</span></div>
+        <span class="muted small">{{ _('с другими загруженными работами, источниками из списка и текстами в интернете') }}</span></div>
       <ul class="notes">
         {% for x in matches %}
         <li>
           {% if x.status == 'local' %}
           <p><b>{{ x.label }}</b> — {{ _('совпадает') }} {{ x.note }} {{ _('текста этой работы') }}</p>
           {% if x.extra %}<q>{{ x.extra }}</q>{% endif %}
+          {% elif x.status == 'previous' %}
+          <p><b>{{ _('Прошлая версия этой работы') }}:</b> <a href="/papers/{{ x.ref }}">{{ x.label|truncate(120) }}</a></p>
+          <p>{{ _('осталось как было') }} {{ x.note }} {{ _('текста этой работы') }}{% if x.note != '100%' %}, {{ _('остальное новое или переписано') }}{% endif %}</p>
+          {% if x.extra %}<p class="muted small">{{ _('Новое') }}:</p><q>{{ x.extra }}</q>{% endif %}
+          {% elif x.status == 'source' %}
+          <p><b>{{ _('Переписано из источника') }} {{ x.ref }}</b> — {{ x.note }} {{ _('текста этой работы, без кавычек') }}</p>
+          <p class="muted small">{{ x.label|truncate(160) }}</p>
+          {% if x.extra %}<q>{{ x.extra }}</q>{% endif %}
+          {% elif x.status == 'similar' %}
+          {% set url = x.extra.partition('\n')[0] %}{% set pieces = x.extra.partition('\n')[2] %}
+          <p><b>{{ _('Работа на ту же тему') }}:</b> {{ x.label|truncate(120) }} — {{ _('совпадает') }} {{ x.note }}</p>
+          {% if pieces %}<q>{{ pieces }}</q>{% endif %}
+          <div class="note-foot"><a class="small" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url|unquote|truncate(70) }}</a></div>
           {% else %}
           <q>{{ x.label }}</q><p>{{ x.note }}</p>
           <div class="note-foot">
@@ -243,7 +256,7 @@
         </li>
         {% else %}<li class="empty">{{ _('Совпадений не нашлось') }}</li>{% endfor %}
       </ul>
-      <p class="muted small">{{ _('В интернете модель ищет несколько самых своеобразных фраз, а не весь текст: отсутствие совпадений не доказывает оригинальность.') }}</p>
+      <p class="muted small">{{ _('В интернете модель ищет несколько самых своеобразных фраз и до пяти работ на ту же тему, а не весь интернет: отсутствие совпадений не доказывает оригинальность. С источниками из списка программа сравнивает весь текст, если источник удалось скачать.') }}</p>
     </section>{% endif %}
 
     {% if checks.do_citations %}<section class="card" id="cites">
@@ -258,7 +271,7 @@
 
     <section class="card" id="biblio">
       <div class="card-head"><h2>{{ _('Оформление списка источников') }}</h2>
-        <span class="muted small">{{ _('порядок, годы, даты обращения, пробелы и повторы') }}</span></div>
+        <span class="muted small">{{ _('порядок, годы, пробелы и повторы') }}</span></div>
       <ul class="checks">
         {% for x in biblio %}
         <li class="fail"><span class="mark">✗</span><span class="grow">{{ x.label }} <q class="muted small">{{ x.note }}</q></span></li>
@@ -299,7 +312,7 @@
         <li class="{{ s.status }}">
           <div class="source-head">{{ s.label }}</div>
           <div class="small">
-            {% if s.extra and s.extra.startswith('pdf:') %}<span class="badge info tiny">{{ _('PDF скачан и сверен') }} · {{ s.extra[4:] }} {{ _('стр.') }}</span>{% endif %}
+            {% if s.extra and s.extra.startswith('pdf:') %}<span class="badge info tiny">{{ _('PDF скачан и сверен') }} · {{ s.extra[4:] }} {{ _('стр.') }}</span>{% elif s.extra == 'html' %}<span class="badge info tiny">{{ _('страница скачана и сравнена с работой') }}</span>{% endif %}
             {% if s.status == 'exists' %}<span class="badge ok tiny">{{ _('существует') }}</span>
             {% elif s.status == 'unreachable' %}<span class="badge warn tiny">{{ _('не открылся') }}</span>
             {% elif s.status == 'not_found' %}<span class="badge danger tiny">{{ _('не найден') }}</span>

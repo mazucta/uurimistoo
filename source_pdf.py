@@ -1,10 +1,12 @@
-"""PDF из списка источников: программа скачивает его сама и отдаёт модели текст, чтобы сверка цитат и цифр
-шла по самому источнику, а не по тому, получилось ли у модели открыть файл.
+"""Источники из списка и найденные в сети работы: программа скачивает их сама.
+PDF отдаётся модели текстом, чтобы сверка цитат и цифр шла по самому источнику; текст любых скачанных
+страниц потом сравнивается с работой кодом — так видно, что переписано слово в слово.
 
 Адреса пишет ученик, поэтому скачивание осторожное: только http(s), только публичные адреса в интернете
 (ни этот компьютер, ни локальная сеть, ни служебные адреса облака), каждый переход по редиректу проверяется
-заново, размер и время ограничены, берётся только то, что действительно PDF.
+заново, размер и время ограничены, берётся только PDF или страница HTML.
 """
+import html.parser
 import io
 import ipaddress
 import re
@@ -20,9 +22,16 @@ MAX_BYTES = 20 * 1024 * 1024   # учебник или статья целико
 TIMEOUT = 15                   # секунд на один файл
 BUDGET = 60                    # секунд на все PDF одной работы
 MAX_PDFS = 6
+MAX_SOURCES = 12               # адресов из списка за одну проверку
+HTML_MAX = 3 * 1024 * 1024
+TEXT_MAX = 300_000             # текста страницы для сравнения с работой
 MAX_PAGES = 80
 MAX_CHARS = 40_000             # текста одного источника в модель: этого хватает для сверки
-LOOKS_PDF = re.compile(r"\.pdf(?:$|[?#])|/pdf/|download|/file|bitstream|getfile|viewcontent", re.I)
+# как у обычного браузера: часть сайтов отвечает 403 на незнакомую подпись, хотя у ученика страница открывается
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Chrome/126.0 Safari/537.36",
+           "Accept": "text/html,application/xhtml+xml,application/pdf,*/*;q=0.8",
+           "Accept-Language": "et,uk,ru;q=0.9,en;q=0.8"}
 URL = re.compile(r"https?://[^\s,;)\]»”\"]+")
 
 
@@ -40,8 +49,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def fetch_pdf(url):
-    """Байты PDF по адресу или None. Не PDF, закрытый адрес, слишком большой файл — None."""
+def fetch(url):
+    """('pdf' или 'html', байты, кодировка) по адресу или None: не PDF и не HTML, закрытый адрес, слишком большой файл."""
     # ponytail: между проверкой адреса и запросом DNS может смениться (rebinding); для пилота хватает,
     # на сервере для настоящих учеников — скачивать через прокси, который сам не пускает во внутреннюю сеть
     opener = urllib.request.build_opener(_NoRedirect)
@@ -49,7 +58,7 @@ def fetch_pdf(url):
         parts = urllib.parse.urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.hostname or not public(parts.hostname):
             return None
-        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (uurimistoo: source check)"})
+        request = urllib.request.Request(url, headers=HEADERS)
         try:
             response = opener.open(request, timeout=TIMEOUT)
         except urllib.error.HTTPError as ex:
@@ -61,40 +70,97 @@ def fetch_pdf(url):
             return None
         with response:
             head = response.read(5)
-            if head != b"%PDF-":
+            if head == b"%PDF-":
+                kind, limit = "pdf", MAX_BYTES
+            elif response.headers.get_content_type() in ("text/html", "application/xhtml+xml"):
+                kind, limit = "html", HTML_MAX
+            else:
                 return None
-            data = head + response.read(MAX_BYTES)
-        return data if len(data) <= MAX_BYTES else None
+            try:
+                data = head + response.read(limit)
+            except (OSError, ValueError):
+                return None
+        return (kind, data, response.headers.get_content_charset() or "utf-8") if len(data) <= limit else None
     return None
 
 
-def pdf_text(data):
+class _Text(html.parser.HTMLParser):
+    SKIP = {"script", "style", "noscript", "nav", "header", "footer", "aside", "form", "svg", "template"}
+
+    def __init__(self):
+        super().__init__()
+        self.out, self.skip = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        self.skip += tag in self.SKIP
+        self.out.append(" ")  # иначе слова соседних блоков слипаются
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self.skip:
+            self.skip -= 1
+        self.out.append(" ")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(data)
+
+
+def html_text(data, charset="utf-8"):
+    """Видимый текст страницы: без скриптов, меню, шапки и подвала."""
+    parser = _Text()
+    try:
+        parser.feed(data.decode(charset, errors="replace"))
+    except LookupError:  # кодировку из заголовка Python не знает
+        parser.feed(data.decode("utf-8", errors="replace"))
+    return re.sub(r"\s+", " ", "".join(parser.out)).strip()[:TEXT_MAX]
+
+
+def page_text(url, fetch_=None):
+    """(вид, страниц, текст) по адресу или None. У HTML страниц 0."""
+    got = (fetch_ or fetch)(url)
+    if not got:
+        return None
+    kind, data, charset = got
+    try:
+        return ("pdf", *pdf_text(data, TEXT_MAX)) if kind == "pdf" else ("html", 0, html_text(data, charset))
+    except Exception:  # битый PDF: источник просто идёт к модели как обычно
+        return None
+
+
+def pdf_text(data, limit=MAX_CHARS):
     """(страниц, текст) из PDF. У скана текста нет — тогда пустая строка."""
     reader = PdfReader(io.BytesIO(data))
     if reader.is_encrypted:
         reader.decrypt("")
     text = "\n".join((page.extract_text() or "") for page in reader.pages[:MAX_PAGES])
-    return len(reader.pages), re.sub(r"[ \t]+", " ", text).strip()[:MAX_CHARS]
+    return len(reader.pages), re.sub(r"[ \t]+", " ", text).strip()[:limit]
 
 
-def source_pdfs(sources, fetch=None):
-    """{номер источника: (страниц, текст)} для источников, у которых адрес ведёт на PDF.
+def source_texts(sources, fetch_=None):
+    """{номер источника: (вид, страниц, текст)} для источников, у которых есть адрес PDF или страницы.
     sources: [(номер, строка списка)]."""
-    fetch = fetch or fetch_pdf
-    out, start = {}, time.monotonic()
+    out, start, tried = {}, time.monotonic(), 0
     for number, entry in sources:
-        if len(out) >= MAX_PDFS or time.monotonic() - start > BUDGET:
+        if tried >= MAX_SOURCES or time.monotonic() - start > BUDGET:
             break
         for url in URL.findall(entry):
-            if not LOOKS_PDF.search(url):
-                continue
-            data = fetch(url.rstrip(".,"))
-            if data:
-                try:
-                    out[number] = pdf_text(data)
-                except Exception:  # битый PDF: источник просто идёт к модели как обычно
-                    pass
+            tried += 1
+            got = page_text(url.rstrip(".,"), fetch_)
+            if got and (got[2] or got[0] == "pdf"):  # скан без текста: источник всё равно существует
+                out[number] = got
                 break
+    return out
+
+
+def urls_texts(urls, fetch_=None):
+    """[(адрес, текст)] для найденных в сети работ: что скачалось за отведённое время."""
+    out, start = [], time.monotonic()
+    for url in urls:
+        if time.monotonic() - start > BUDGET:
+            break
+        got = page_text(url, fetch_)
+        if got and got[2]:
+            out.append((url, got[2]))
     return out
 
 
@@ -102,10 +168,9 @@ if __name__ == "__main__":
     for blocked in ("http://127.0.0.1:8000/x.pdf", "http://localhost/x.pdf", "http://169.254.169.254/latest/x.pdf",
                     "http://10.0.0.5/a.pdf", "http://192.168.1.1/a.pdf", "file:///etc/passwd", "ftp://example.com/a.pdf",
                     "http://[::1]/a.pdf"):
-        assert fetch_pdf(blocked) is None, blocked
+        assert fetch(blocked) is None, blocked
     assert public("example.com") and not public("localhost") and not public("no-such-host.invalid")
 
-    from pypdf import PdfWriter
     from PIL import Image, ImageDraw
     img = Image.new("RGB", (400, 200), "white")
     ImageDraw.Draw(img).text((10, 10), "x", fill="black")
@@ -114,8 +179,17 @@ if __name__ == "__main__":
     pages, text = pdf_text(buf.getvalue())
     assert pages == 1 and text == "", (pages, text)  # скан: страница есть, текста нет
 
-    got = source_pdfs([(1, "Автор. Статья. https://site.ee/a.pdf"), (2, "Сайт. https://site.ee/page"),
-                       (3, "Книга. https://repo.ee/bitstream/1/k.pdf.")],
-                      fetch=lambda url: buf.getvalue() if url.endswith(".pdf") else None)
-    assert set(got) == {1, 3}, got  # обычную страницу не качаем, точку в конце записи отрезаем
+    page = ("<html><head><style>p{}</style><script>var x=1</script></head><body><nav>Меню Главная</nav>"
+            "<article><h1>Заголовок</h1><p>Первый абзац<br>второй</p></article><footer>©</footer></body></html>").encode()
+    assert html_text(page) == "Заголовок Первый абзац второй", html_text(page)
+    assert html_text("<p>Ülikool</p>".encode("cp1257"), "windows-1257") == "Ülikool"
+    assert html_text(b"<p>x</p>", "no-such-charset") == "x"
+
+    fake = lambda url: (("pdf", buf.getvalue(), "") if url.endswith(".pdf") else ("html", page, "utf-8")
+                        if "page" in url else None)
+    got = source_texts([(1, "Автор. Статья. https://site.ee/a.pdf"), (2, "Сайт. https://site.ee/page"),
+                        (3, "Книга. https://repo.ee/bitstream/1/k.pdf."), (4, "Без адреса. 2020."),
+                        (5, "Мёртвая ссылка. https://site.ee/404")], fake)
+    assert set(got) == {1, 2, 3} and got[1][0] == "pdf" and got[2] == ("html", 0, html_text(page)), got
+    assert urls_texts(["https://x.ee/page", "https://x.ee/404"], fake) == [("https://x.ee/page", html_text(page))]
     print("ok")

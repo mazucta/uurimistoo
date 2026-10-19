@@ -15,37 +15,66 @@ def words(text):
     return [w.lower() for w in WORD.findall(text)]
 
 
-def overlap(text, others):
-    """Совпадения работы с другими работами учителя. others: [(подпись, текст)].
-    Ответ: [(подпись, доля совпавшего текста этой работы, до трёх совпавших кусков)] по убыванию доли."""
+def _covered(mine, other):
+    """Какие слова этой работы попали хоть в одно совпадение из SHINGLE слов подряд с другим текстом."""
+    theirs = words(other)
+    pool = {tuple(theirs[i:i + SHINGLE]) for i in range(len(theirs) - SHINGLE + 1)}
+    covered = [False] * len(mine)
+    for i in range(len(mine) - SHINGLE + 1):
+        if tuple(mine[i:i + SHINGLE]) in pool:
+            covered[i:i + SHINGLE] = [True] * SHINGLE
+    return covered
+
+
+def _runs(mine, mask, shortest=1):
+    """До трёх первых сплошных кусков, где mask истинна, по 30 слов, не короче shortest слов."""
+    pieces, i = [], 0
+    while i < len(mask) and len(pieces) < 3:
+        if mask[i]:
+            j = i
+            while j < len(mask) and mask[j]:
+                j += 1
+            if j - i >= shortest:
+                pieces.append(" ".join(mine[i:min(j, i + 30)]))
+            i = j
+        else:
+            i += 1
+    return pieces
+
+
+def overlap(text, others, min_share=LOCAL_MIN):
+    """Совпадения работы с другими текстами: работами учителя, источниками, найденными в сети работами.
+    others: [(подпись, текст)]. Ответ: [(подпись, доля совпавшего текста этой работы, до трёх совпавших кусков)]
+    по убыванию доли; тексты с долей меньше min_share не попадают."""
     mine = words(text)
     if len(mine) < SHINGLE:
         return []
-    grams = [tuple(mine[i:i + SHINGLE]) for i in range(len(mine) - SHINGLE + 1)]
     out = []
     for label, other in others:
-        theirs = words(other)
-        pool = {tuple(theirs[i:i + SHINGLE]) for i in range(len(theirs) - SHINGLE + 1)}
-        hit = [g in pool for g in grams]
-        covered = [False] * len(mine)  # слова этой работы, попавшие хоть в одно совпадение
-        for i, h in enumerate(hit):
-            if h:
-                covered[i:i + SHINGLE] = [True] * SHINGLE
+        covered = _covered(mine, other)
         share = sum(covered) / len(mine)
-        if share < LOCAL_MIN:
-            continue
-        pieces, i = [], 0
-        while i < len(covered) and len(pieces) < 3:  # самые первые сплошные куски совпадения
-            if covered[i]:
-                j = i
-                while j < len(covered) and covered[j]:
-                    j += 1
-                pieces.append(" ".join(mine[i:min(j, i + 30)]))
-                i = j
-            else:
-                i += 1
-        out.append((label, share, pieces))
+        if share >= min_share:
+            out.append((label, share, _runs(mine, covered)))
     return sorted(out, key=lambda x: -x[1])
+
+
+def changes(text, old):
+    """Новая версия работы против прошлой того же ученика: (доля текста, оставшаяся как была, до трёх новых кусков).
+    Новые куски короче SHINGLE слов не показываем: это правка пары слов, а не новый текст."""
+    mine = words(text)
+    if not mine:
+        return 1.0, []
+    covered = _covered(mine, old)
+    return sum(covered) / len(mine), _runs(mine, [not c for c in covered], SHINGLE)
+
+
+SOURCE_MIN = 0.01           # из источника: два-три переписанных предложения уже стоит показать учителю
+ANY_QUOTE = re.compile(r"[«„“\"][^«»„“”\"\n]{1,600}[»“”\"]")
+
+
+def unquoted(text):
+    """Текст без кусков в кавычках: дословная цитата с кавычками — это цитирование, а не копирование."""
+    return ANY_QUOTE.sub(" … ", text)
 
 
 QUOTE = re.compile(r"[«„“\"]([^«»„“”\"]{40,400})[»“”\"]")
@@ -87,9 +116,6 @@ def citations(text, sources, cite_pattern):
 
 NO_DATE = re.compile(r"\((?:n\.\s?d\.|н\.\s?д\.|б\.\s?д\.|б\.\s?г\.|s\.\s?a\.|i\.\s?a\.)\)", re.I | re.U)
 YEAR = re.compile(r"\b(1[5-9]\d\d|20\d\d)\b")
-URL_IN = re.compile(r"https?://|www\.", re.I)
-ACCESSED = re.compile(r"дата (?:звернення|обращения|перегляду|просмотра)|vaadatud|kasutatud|accessed|retrieved|"
-                      r"переглянуто|просмотрено", re.I | re.U)
 
 
 ORDER = "абвгґдеёєжзиіїйклмнопрстуфхцчшщъыьэюя" + "abcdefghijklmnopqrsšzžtuvwõäöüxy"  # укр./рус. и эст. алфавиты
@@ -100,9 +126,9 @@ def alpha(text):
     return [ORDER.index(ch) if ch in ORDER else 1000 + ord(ch) for ch in text]
 
 
-def bibliography(sources, access_date=True):
+def bibliography(sources):
     """Оформление списка источников, то, что видно без стандарта: порядок, год, единообразие «без даты»,
-    дата обращения к интернет-источнику (если школа её требует), пробелы, повторы. Ответ: [(что не так, запись)]."""
+    пробелы, повторы. Ответ: [(что не так, запись)]."""
     out = []
     keys = [re.sub(r"^[\d\s.)]+", "", s).strip().lower() for s in sources]
     for script in (r"[a-zõäöüšž]", r"[а-яёіїєґ]"):  # по алфавиту внутри каждой азбуки: латиница и кириллица отдельно
@@ -118,8 +144,6 @@ def bibliography(sources, access_date=True):
     for s in sources:
         if not YEAR.search(s) and not NO_DATE.search(s):
             out.append(("Нет года издания или пометки «без даты»", s[:160]))
-        if access_date and URL_IN.search(s) and not ACCESSED.search(s):
-            out.append(("У интернет-источника нет даты обращения", s[:160]))
         if re.search(r"[^\s(\[]https?://|\s[.,;:](?!\d)|\S {2,}\S", s):
             out.append(("Пробелы и знаки: слитно перед ссылкой, пробел перед точкой или двойной пробел", s[:160]))
     seen = set()
@@ -168,6 +192,14 @@ if __name__ == "__main__":
     hits = overlap(base + " и ещё моя собственная мысль про Эстонию", [("Иванов", "Вступ. " + base + ". Конец."), ("Другой", "совсем другой текст")])
     assert len(hits) == 1 and hits[0][0] == "Иванов" and hits[0][1] > 0.7 and hits[0][2], hits
     assert overlap("коротко", [("x", "коротко")]) == []
+    source = base + ". Дальше в источнике идёт совсем другой текст про рынок"
+    assert overlap(unquoted(f"Как пишет автор, «{base}» (Hirth, 2013)."), [("1", source)], SOURCE_MIN) == []
+    copied = overlap(unquoted(f"Как пишет автор, {base} (Hirth, 2013)."), [("1", source)], SOURCE_MIN)
+    assert copied and copied[0][1] > 0.5, copied
+    same, fresh = changes(base + ". Новый раздел про то, как я сам опросил тридцать одноклассников в школе.", base)
+    assert 0.5 < same < 1 and fresh == ["новый раздел про то как я сам опросил тридцать одноклассников в школе"], (same, fresh)
+    assert changes(base, base) == (1.0, []) and changes("", base) == (1.0, [])
+    assert overlap(base, [("чисто", "ничего общего у этих текстов нет совсем никак вообще")], 0)[0][1] == 0
 
     cite = re.compile(r"\([^()]{2,90}?\d{4}[^()]{0,25}\)|\[\d{1,3}\]")
     srcs = ["Hirth L. The market value of solar power. 2013.", "Elering. Andmed. 2025.", "Никто не цитирует 2020."]
@@ -187,13 +219,13 @@ if __name__ == "__main__":
                            "4. Агеев А. Без года.", "5. Abels A. (n.d.)https://a.ee"])
     kinds = [b[0] for b in biblio]
     for need in ("Список не по алфавиту", "Разные обозначения «без даты» в одном списке", "Нет года издания или пометки «без даты»",
-                 "У интернет-источника нет даты обращения", "Источник повторяется в списке"):
+                 "Источник повторяется в списке"):
         assert need in kinds, (need, biblio)
     assert any(k.startswith("Пробелы") for k in kinds), biblio
     assert bibliography(["Aaa A. 2020. https://a.ee (vaadatud 01.10.2026).", "Bbb B. 2021."]) == []
     assert bibliography(["Імас Є. 2021.", "Подрігало Л. 2024.", "Шинкарук О. 2021."]) == []  # і перед п по-украински
     assert bibliography(["Saar S. 2020.", "Šmidt Š. 2020.", "Zeiger Z. 2020.", "Tamm T. 2020."]) == []  # эстонский порядок
-    assert not [b for b in bibliography(["Aaa A. 2020. https://a.ee"], access_date=False) if "обращения" in b[0]]
+    assert bibliography(["Aaa A. 2020. https://a.ee", "Bbb B. 2021. www.b.ee"]) == []  # дату обращения не требуем
 
     signs = ai_signs("Конечно! Вот ваш реферат.\n## Введение\nТекст [вставьте название школы]​. "
                      "Слова pуcский, cвoй, нaш, тeкст.")
