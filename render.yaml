@@ -5,7 +5,8 @@ services:
     runtime: python
     plan: starter
     region: frankfurt
-    buildCommand: pip install -r requirements.txt
+    # Claude Code ставится рядом с кодом: через него проверки идут по подписке (токен CLAUDE_CODE_OAUTH_TOKEN)
+    buildCommand: pip install -r requirements.txt && node --version && npm install --prefix .cli @anthropic-ai/claude-code@2.1.306
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
     healthCheckPath: /login
     disk:
@@ -23,6 +24,10 @@ services:
         value: "3.13.7"
       - key: AI_MODEL
         value: claude-sonnet-5-5
+      - key: CLAUDE_CLI
+        value: /opt/render/project/src/.cli/node_modules/.bin/claude
+      - key: CLAUDE_CODE_OAUTH_TOKEN
+        sync: false          # токен подписки: claude setup-token на своём компьютере; пусто — Claude Code не используется
       - key: ANTHROPIC_API_KEY
         sync: false          # значение вводится в панели Render при создании, в репозитории его нет
       # Canva: ключи интеграции из Canva Developer Portal задаются в панели Render, здесь только адрес возврата

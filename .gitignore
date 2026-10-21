@@ -4,3 +4,4 @@ __pycache__/
 server.log
 backup-*.db
 .env
+.cli/

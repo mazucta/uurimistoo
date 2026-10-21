@@ -782,7 +782,9 @@ def backend(teacher_id=None):
     без ключа все идут через Claude Code. Нет ни того, ни другого: проверка ИИ выключена."""
     if AI_BACKEND in ("api", "cli"):
         return AI_BACKEND
-    has_cli, has_key = bool(shutil.which(CLAUDE_CLI)), bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    # на сервере Claude Code без токена подписки не войдёт: считаем, что его нет
+    has_cli = bool(shutil.which(CLAUDE_CLI)) and (sys.platform == "darwin" or bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")))
     if has_cli and (not has_key or is_owner(teacher_id)):
         return "cli"
     return "api" if has_key else "none"
