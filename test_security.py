@@ -630,7 +630,11 @@ first = c.post("/api/login", json={"login": "lisa", "password": "pervyi-parol"})
 A.TEACHER_PASSWORD = "vtoroi-parol"; A.ensure_teacher()
 old = c.post("/api/login", json={"login": "lisa", "password": "pervyi-parol"}).status_code
 new = c.post("/api/login", json={"login": "lisa", "password": "vtoroi-parol"}).status_code
+A.TEACHERS = [["Kati", "Kati2", "kati-parol:x"], ["", "short", "1234"]]; A.ensure_teacher()
+kati = c.post("/api/login", json={"login": "kati2", "password": "kati-parol:x"}).status_code
 con = A.connect()
+ok("учителя из TEACHERS заводятся, короткий пароль пропущен", kati == 200
+   and not con.execute("SELECT 1 FROM users WHERE login='short'").fetchone())
 count = con.execute("SELECT COUNT(*) FROM users WHERE login='lisa'").fetchone()[0]
 reqs = con.execute("SELECT COUNT(*) FROM requirements r JOIN users u ON u.id=r.teacher_id WHERE u.login='lisa'").fetchone()[0]
 con.close()

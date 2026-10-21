@@ -48,6 +48,8 @@ REGISTRATION = os.environ.get("REGISTRATION", "on") != "off"  # off: стран�
 TEACHER_LOGIN = os.environ.get("TEACHER_LOGIN", "").strip().lower()
 TEACHER_PASSWORD = os.environ.get("TEACHER_PASSWORD", "")
 TEACHER_NAME = os.environ.get("TEACHER_NAME", "") or TEACHER_LOGIN
+# Ещё учителя с сервера, по строке на каждого: «Имя:логин:пароль» (в пароле двоеточие допустимо)
+TEACHERS = [x.strip().split(":", 2) for x in os.environ.get("TEACHERS", "").splitlines() if x.count(":") >= 2]
 REGISTER_CODE = os.environ.get("REGISTER_CODE", "")
 # Ссылка для учителей: /k/<ACCESS_KEY> даёт свой кабинет без регистрации. Пусто: ссылки нет.
 ACCESS_KEY = os.environ.get("ACCESS_KEY", "")  # пусто: регистрация открыта
@@ -1608,14 +1610,16 @@ def create_teacher(con, name, login_, pw, lang_):
 
 def ensure_teacher():
     """Учитель из настроек сервера: заводится, если его нет, а пароль всегда берётся из настроек."""
-    if not TEACHER_LOGIN or len(TEACHER_PASSWORD) < 8:
-        return
-    with connect() as con:
-        row = con.execute("SELECT id, pw_hash FROM users WHERE login=?", (TEACHER_LOGIN,)).fetchone()
-        if not row:
-            create_teacher(con, TEACHER_NAME, TEACHER_LOGIN, TEACHER_PASSWORD, LANGS[0])
-        elif not check_password_hash(row[1], TEACHER_PASSWORD):
-            con.execute("UPDATE users SET pw_hash=? WHERE id=?", (generate_password_hash(TEACHER_PASSWORD), row[0]))
+    for name, login, password in [(TEACHER_NAME, TEACHER_LOGIN, TEACHER_PASSWORD)] + TEACHERS:
+        login = login.strip().lower()
+        if not login or len(password) < 8:
+            continue
+        with connect() as con:
+            row = con.execute("SELECT id, pw_hash FROM users WHERE login=?", (login,)).fetchone()
+            if not row:
+                create_teacher(con, name.strip() or login, login, password, LANGS[0])
+            elif not check_password_hash(row[1], password):
+                con.execute("UPDATE users SET pw_hash=? WHERE id=?", (generate_password_hash(password), row[0]))
 
 
 @app.post("/logout")
