@@ -5,8 +5,7 @@ os.environ["DEMO"] = "0"  # чистая база, демонстрационн�
 from werkzeug.security import generate_password_hash
 import app as A
 
-con = sqlite3.connect(A.DB)
-con.row_factory = sqlite3.Row
+con = A.connect()
 if con.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]:
     sys.exit("База не пустая. Удалите data.db и запустите снова.")
 

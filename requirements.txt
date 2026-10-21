@@ -1,7 +1,10 @@
-flask
-anthropic
-pypdf
-gunicorn
-python-pptx
-python-docx
-pypdfium2
+# версии закреплены: обновлять осознанно, а не при каждой установке
+flask==3.1.3
+anthropic==1.6.0
+pypdf==6.19.0
+pillow==12.3.0
+gunicorn==26.2.0
+python-pptx==1.0.2
+python-docx==1.2.0
+pypdfium2==5.14.0
+cryptography==50.0.2

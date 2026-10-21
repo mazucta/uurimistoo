@@ -7,6 +7,7 @@ import os, sqlite3, sys, tempfile, time
 
 DB = os.path.join(tempfile.mkdtemp(), "test.db")
 os.environ["DB"], os.environ["DEMO"] = DB, "0"
+os.environ["DATA_KEY"] = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="  # свой ключ: связку ключей не трогаем
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import app as A
 A.threading.Thread = type("T", (), {"__init__": lambda self, **k: None, "start": lambda self: None})  # без ИИ-запросов
@@ -31,14 +32,14 @@ ok("BUG-02 условие через JSON добавляется",
    c.post("/api/requirements", headers=H, json={"text": "Новое условие", "rule": "ai", "profile": 1}).status_code == 200)
 
 # SEC-02: старая сессия отвергается
-con = sqlite3.connect(DB)
+con = A.connect()
 con.execute("UPDATE sessions SET created_at=0")
 con.commit(); con.close()
 ok("SEC-02 сессия 1970 года отклонена", c.get("/api/papers", headers=H).status_code == 401)
 
 tok = c.post("/api/login", json={"login": "teach1", "password": "korotkiy"}).json["token"]
 H = {"Authorization": "Bearer " + tok}
-con = sqlite3.connect(DB)
+con = A.connect()
 stored = con.execute("SELECT token FROM sessions").fetchone()[0]
 ok("SEC-02 в базе лежит хеш, а не токен", stored != tok and len(stored) == 64)
 con.close()
@@ -47,7 +48,7 @@ con.close()
 sample = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db")  # любой файл: он всё равно не читается
 pid = c.post("/api/papers", headers=H, data={"profile": "1", "file": (open(sample, "rb"), "s.docx")}).json.get("id")
 if not pid:  # файл не разобрался, заводим работу напрямую: тестам нужен только её id
-    con = sqlite3.connect(DB)
+    con = A.connect()
     pid = con.execute("INSERT INTO papers(teacher_id,profile_id,uploaded_at) VALUES(1,1,strftime('%s','now'))").lastrowid
     con.commit(); con.close()
 before = c.get("/api/papers", headers=H).json["requirements"]
@@ -57,7 +58,7 @@ ok("BUG-01 профиль с работой не удаляется", resp.statu
    f"код {resp.status_code}, условий было {len(before)} стало {len(after)}")
 
 # BUG-04: открытие отчёта ничего не пишет
-con = sqlite3.connect(DB)
+con = A.connect()
 snap = con.execute("SELECT COUNT(*), SUM(LENGTH(note)) FROM findings").fetchone()
 c.get(f"/api/papers/{pid}?lang=et", headers=H); c.get(f"/api/papers/{pid}?lang=uk", headers=H)
 same = con.execute("SELECT COUNT(*), SUM(LENGTH(note)) FROM findings").fetchone()
@@ -67,13 +68,13 @@ con.close()
 # SEC-03: повтор не создаёт вторую задачу
 started = []
 A.threading.Thread = type("T", (), {"__init__": lambda self, **k: started.append(k), "start": lambda self: None})
-con = sqlite3.connect(DB); con.execute("UPDATE papers SET ai_status='done'"); con.commit(); con.close()
+con = A.connect(); con.execute("UPDATE papers SET ai_status='done'"); con.commit(); con.close()
 for _ in range(3):
     c.post(f"/api/papers/{pid}/recheck", headers=H, json={})
 ok("SEC-03 три повтора создают одну задачу", len(started) == 1, f"задач {len(started)}")
 
 # квота в час
-con = sqlite3.connect(DB)
+con = A.connect()
 con.execute("DELETE FROM limits"); con.commit()
 for _ in range(A.AI_PER_HOUR + 3):
     con.execute("UPDATE papers SET ai_status='done'"); con.commit()
@@ -102,7 +103,7 @@ resp = c.get(f"/api/papers/{pid}/file", headers=H)
 ok("отчёт выгружается в .docx", resp.status_code == 200 and resp.data[:2] == b"PK", f"код {resp.status_code}")
 
 # Очередь: оборванная задача поднимается один раз, на втором обрыве становится понятной ошибкой
-con = sqlite3.connect(DB)
+con = A.connect()
 con.execute("UPDATE papers SET ai_status='pending', ai_note=NULL WHERE id=?", (pid,)); con.commit()
 first = A.resume_jobs()
 state1 = con.execute("SELECT ai_status, ai_note FROM papers WHERE id=?", (pid,)).fetchone()
@@ -120,7 +121,7 @@ left = con.execute("SELECT COUNT(*) FROM findings WHERE paper_id=?", (old,)).fet
 ok("хранение: работа старше срока удалена с отчётом", old not in ids and pid in ids and left == 0, f"{ids} {left}")
 con.close()
 
-con = sqlite3.connect(DB)
+con = A.connect()
 con.execute("DELETE FROM limits"); con.commit(); con.close()  # квоту выбрал SEC-03
 
 # Canva: вход по OAuth с одноразовым state, без открытого редиректа, импорт кладёт ссылку на дизайн
@@ -149,7 +150,7 @@ ok("canva: после входа только свой адрес", back.status_
 ok("canva: state одноразовый", c.get(f"/api/canva/callback?state={state}&code=z", headers=H).status_code == 400)
 ok("canva: секрет уходит только в заголовке Basic",
    any(p == "/oauth/token" and h.get("Authorization", "").startswith("Basic ") for _m, p, h in calls))
-con = sqlite3.connect(DB)
+con = A.connect()
 slides = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'slides','Тема','done',?,1)",
                      ('{"title": "Тема", "slides": [{"title": "Первый", "points": ["раз"], "question": "", "notes": ""}]}',)).lastrowid
 con.commit()
@@ -176,7 +177,7 @@ ok("чат: вопрос возвращается, вариантов не бо�
 A.ask_claude = lambda system, content, schema, **k: {"reply": "Готовлю", "ready": True, "kind": "quiz", "topic": "Т" * 999,
                                                 "grade": "9", "count": 500, "extra": "х" * 5000}
 mid = c.post("/api/materials/chat", headers=H, json={"messages": [{"role": "user", "text": "готовить"}]}).json.get("id")
-con = sqlite3.connect(DB)
+con = A.connect()
 row = con.execute("SELECT kind, LENGTH(topic), count, LENGTH(extra), teacher_id FROM materials WHERE id=?", (mid,)).fetchone()
 con.close()
 ok("чат: материал заведён с теми же пределами, что у формы", row == ("quiz", 300, 30, 1000, 1), repr(row))
@@ -200,7 +201,7 @@ def fake_claude(system, content, schema, **k):
 A.ask_claude = fake_claude
 mid_files = c.post("/api/materials/chat", headers=H, json={"messages": [{"role": "user", "text": "ось"}],
                                                             "files": [mine_id, their_id, "1; DROP"]}).json.get("id")
-con = sqlite3.connect(DB)
+con = A.connect()
 linked = con.execute("SELECT name FROM uploads WHERE material_id=?", (mid_files,)).fetchall()
 con.close()
 ok("приложения: подделка и большой файл отклонены", (fake, big) == (400, 400), f"{fake} {big}")
@@ -212,7 +213,7 @@ blocks = A.file_blocks([{"name": "a.png", "mime": "image/png", "data": png},
 ok("приложения: картинка, PDF и текст становятся блоками", [b["type"] for b in blocks] == ["image", "document", "text"]
    and "Тема: дроби" in blocks[2]["text"], repr([b["type"] for b in blocks]))
 c.post(f"/api/materials/{mid_files}/delete", headers=H, json={})
-con = sqlite3.connect(DB)
+con = A.connect()
 left = con.execute("SELECT COUNT(*) FROM uploads WHERE material_id=?", (mid_files,)).fetchone()[0]
 con.close()
 ok("приложения: удаляются вместе с материалом", left == 0, f"осталось {left}")
@@ -235,7 +236,7 @@ ok("страницы разбираются", A.parse_pages("3, 1-2, 2", 5) == [
    and A.parse_pages("abc", 5) is None and A.ranges([1, 2, 3, 7, 9, 10]) == "1–3, 7, 9–10")
 
 # Просьба переделать материал: модель видит текущий материал и просьбу, старая версия возвращается кнопкой
-con = sqlite3.connect(DB)
+con = A.connect()
 rev = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'quiz','Дроби','done',?,1)",
                   ('{"title": "Дроби", "questions": [{"question": "Ручна правка вчителя"}]}',)).lastrowid
 con.execute("DELETE FROM limits"); con.commit()
@@ -256,7 +257,7 @@ c.post(f"/api/materials/{rev}/undo", headers=H, json={})
 back = con.execute("SELECT content FROM materials WHERE id=?", (rev,)).fetchone()[0]
 con.close()
 ok("переделка: «вернуть как было» возвращает прежний вариант", "Ручна правка" in back, back[:60])
-con = sqlite3.connect(DB)
+con = A.connect()
 con.execute("UPDATE materials SET lang='uk', status='done' WHERE id=?", (rev,)); con.commit()
 c.post(f"/api/materials/{rev}/revise?lang=et", headers=H, data={"request": "додай приклади",
        "file": (_io.BytesIO(png), "Приклад.png")}, content_type="multipart/form-data")
@@ -279,7 +280,7 @@ ok("модели: разговор на CHAT_MODEL, генерация на SUBS
 # в презентацию картинка попадает
 import base64 as _b64, zipfile as _zip
 tiny = _b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
-con = sqlite3.connect(DB)
+con = A.connect()
 pic_mid = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'slides','Фото','new','',1)").lastrowid
 pic_id = con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,created_at) VALUES(1,?,'фото.png','image/png',?,1)",
                      (pic_mid, tiny)).lastrowid
@@ -303,7 +304,7 @@ deck = c.get(f"/api/materials/{pic_mid}/file", headers=H).data
 ok("картинки: в презентации .pptx есть картинки", any(n.startswith("ppt/media/") for n in _zip.ZipFile(_io.BytesIO(deck)).namelist()))
 
 # Рабочий лист: страница открывается, таблица настоящая, номера не двоятся, Word собирается
-con = sqlite3.connect(DB)
+con = A.connect()
 ws = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'worksheet','A1','done',?,1)",
                  (__import__("json").dumps({"title": "Kontrolltöö", "tasks": [
                      {"variant": "I variant", "title": "1. KÜSIMUSED", "kind": "questions", "items": ["1. Mis sinu nimi on?"],
@@ -316,7 +317,7 @@ html = page.get_data(as_text=True)
 ok("рабочий лист: страница с таблицей и линиями, без «1. 1.»", page.status_code == 200 and "sheet-table" in html
    and "answer-line" in html and "Ma istu____" in html and ">1. Mis" not in html, f"код {page.status_code}")
 ok("рабочий лист: выгружается в Word", c.get(f"/api/materials/{ws}/file", headers=H).data[:2] == b"PK")
-con = sqlite3.connect(DB)
+con = A.connect()
 ws_pic = con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,created_at) VALUES(1,?,'риба','image/png',?,1)",
                      (ws, tiny)).lastrowid
 con.execute("UPDATE materials SET status='new' WHERE id=?", (ws,)); con.commit()
@@ -339,7 +340,7 @@ for _ in range(3):
 _buf = _io.BytesIO(); book_pdf.write(_buf)
 r_book = c.post("/api/materials/books", headers=H, content_type="multipart/form-data",
                 data={"name": "Біологія 7", "file": (_io.BytesIO(_buf.getvalue()), "bio.pdf")})
-con = sqlite3.connect(DB)
+con = A.connect()
 book_id = con.execute("SELECT id FROM uploads WHERE library=1 AND name='Біологія 7'").fetchone()[0]
 con.execute("UPDATE uploads SET created_at=0 WHERE id=?", (book_id,)); con.commit()
 A.purge_old(con); con.commit()
@@ -353,7 +354,7 @@ ok("учебник: страницы и рисунки становятся вл
    and len(took["files"]) == 4 and "с. 2" in took["files"][1]["name"] and took["files"][3]["name"].startswith("Біологія 7, с. 3") and alien_take == 404, repr(took))
 
 # PDF материала: рисунки из него достаются отдельными картинками один раз; переделка меняет вид материала
-con = sqlite3.connect(DB)
+con = A.connect()
 with_pdf = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'quiz','Kell','done',?,1)",
                        ('{"title": "Kell", "questions": []}',)).lastrowid
 con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,pages,created_at) VALUES(1,?,'Tööraamat.pdf','application/pdf',?,3,1)",
@@ -377,7 +378,7 @@ ok("переделка: вид меняется на рабочий лист, р
 
 # Снимки страниц и вырезы: страница становится картинкой, модель называет края куска, программа вырезает
 shots = A.page_snapshots(_buf.getvalue(), [1, 2])
-con = sqlite3.connect(DB)
+con = A.connect()
 snap_mid = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'slides','Сторінка','new','',1)").lastrowid
 snap_id = con.execute("INSERT INTO uploads(teacher_id,material_id,name,mime,data,created_at) VALUES(1,?,'с. 1, сторінка','image/png',?,1)",
                       (snap_mid, shots[0][1])).lastrowid
@@ -410,7 +411,7 @@ class _Doc:
     unknown, margins = frozenset(), {}
 common = ("Отрицательные цены на электроэнергию возникают в часы, когда солнечные станции производят больше "
           "энергии, чем может потребить сеть, и производитель доплачивает за отбор мощности.")
-con = sqlite3.connect(DB)
+con = A.connect()
 twin = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,uploaded_at) VALUES(1,1,'Робота Петра',?,?)",
                    (common + " Інший кінець.", __import__("time").time())).lastrowid
 alien_twin = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,uploaded_at) VALUES(2,1,'Чужа',?,?)",
@@ -435,7 +436,7 @@ ok("отчёт с новыми разделами открывается", page.
    and 'id="cites"' in page.get_data(as_text=True), f"код {page.status_code}")
 
 # «Сохранить оформление» не выключает проверки; проверка удалённой работы не пишет в новую с тем же номером
-con = sqlite3.connect(DB)
+con = A.connect()
 prof = con.execute("INSERT INTO profiles(teacher_id,name,rules,created_at) VALUES(1,'Оформлення','{}',1)").lastrowid
 con.commit(); con.close()
 c.post(f"/api/profiles/{prof}/rules", headers=H, json={"font": "Arial", "justify": "0"})
@@ -454,7 +455,7 @@ def school_rules(system, content, schema, **k):
                              {"text": "Кривий", "rule": "sources_min", "value": "багато"},
                              {"text": "", "rule": "ai", "value": ""}]}
 A.ask_claude = school_rules
-con = sqlite3.connect(DB); con.execute("DELETE FROM limits"); con.commit(); con.close()
+con = A.connect(); con.execute("DELETE FROM limits"); con.commit(); con.close()
 doc_up = lambda headers, data, name: c.post(f"/api/profiles/{prof}/import", headers=headers,
                                            data={"file": (_io.BytesIO(data), name)}, content_type="multipart/form-data")
 bad_file = doc_up(H, b"MZ\x90 exe", "vimogi.exe").status_code
@@ -472,11 +473,11 @@ ok("профиль из файла: условия заменены, числа 
    reqs == [("Обсяг від 10 сторінок", "chars_min", "20000"), ("Є висновки", "section", "висновк,kokkuvõte"),
             ("Є гіпотеза", "ai", ""), ("Кривий", "ai", "")], repr(reqs))
 
-con = sqlite3.connect(DB)
+con = A.connect()
 ghost = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at) VALUES(1,1,'Стара','текст','pending',1)").lastrowid
 con.commit()
 def swap_paper(system, content, schema, **k):  # пока модель думает, работу удалили, номер достался новой
-    db = sqlite3.connect(DB)
+    db = A.connect()
     db.execute("DELETE FROM papers WHERE id=?", (ghost,))
     db.execute("INSERT INTO papers(id,teacher_id,profile_id,title,ai_status,uploaded_at) VALUES(?,1,1,'Нова','pending',2)", (ghost,))
     db.commit(); db.close()
@@ -488,7 +489,7 @@ con.close()
 ok("проверка удалённой работы не пишет в новую с тем же номером", row == ("Нова", "pending", None), repr(row))
 
 # Обучение на правках учителя: его баллы и комментарии идут в следующую проверку, чужие — нет
-con = sqlite3.connect(DB); con.row_factory = sqlite3.Row
+con = A.connect()
 marked = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at,verdict,teacher) "
                      "VALUES(1,1,'Оцінена','т','done',6,'ai',?)",
                      ('{"marks": {"3": {"score": 4, "note": "теорію пов’язано з опитуванням"}}, "verdict": "student"}',)).lastrowid
@@ -506,7 +507,7 @@ ok("правки учителя: чужие не попадают, без оце
 
 # PDF-источник: программа скачивает его сама, текст уходит в модель, источник отмечен как существующий
 from pypdf import PdfWriter as _PW
-con = sqlite3.connect(DB)
+con = A.connect()
 src_paper = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at) VALUES(1,1,'PDF','текст','pending',5)").lastrowid
 con.execute("INSERT INTO findings(paper_id,kind,position,label,status) VALUES(?,'source',1,'Автор. Звіт. https://repo.ee/files/report.pdf','unclear')", (src_paper,))
 con.commit()
@@ -536,7 +537,7 @@ with _z.ZipFile(_buf, "w") as z:
         + para("Список використаних джерел", "H") + "<w:p><w:r><w:t>1. Elering. Звіт. 2024. </w:t></w:r><w:hyperlink><w:r>"
         "<w:t>https://elering.ee/report</w:t></w:r></w:hyperlink></w:p></w:body></w:document>")
     z.writestr("word/styles.xml", f'<w:styles xmlns:w="{W_}"><w:style w:styleId="H"><w:name w:val="heading 1"/></w:style></w:styles>')
-con = sqlite3.connect(DB)
+con = A.connect()
 orig = con.execute("INSERT INTO papers(teacher_id,profile_id,title,filename,text,data,ai_status,uploaded_at) "
                    "VALUES(1,1,'Ціни','w.docx','текст',?,'pending',6)", (_buf.getvalue(),)).lastrowid
 con.execute("INSERT INTO findings(paper_id,kind,position,label,status) VALUES(?,'source',1,'Elering. Звіт. 2024. https://elering.ee/report','unclear')", (orig,))
@@ -587,7 +588,7 @@ up = lambda body, who: c.post("/api/papers", headers=H, data={"profile": "1", "s
 v1 = up(draft, "Марія Т.")
 v2 = up(draft + " Новий розділ про те як я сама опитала тридцять однокласників у школі.", " марія т. ")
 v3 = up(draft, "Інший учень")
-con = sqlite3.connect(DB)
+con = A.connect()
 m2, m3 = (con.execute("SELECT status, ref, note, extra FROM findings WHERE paper_id=? AND kind='match' ORDER BY position",
                       (x,)).fetchall() for x in (v2, v3))
 con.close()
@@ -596,6 +597,11 @@ ok("версии: прошлая версия того же ученика ср�
    and len(m2) == 1, repr(m2))
 ok("версии: такая же работа у другого ученика — совпадение", [r[0] for r in m3][:1] == ["local"]
    and "previous" not in [r[0] for r in m3], repr(m3))
+con = A.connect(); con.execute("PRAGMA wal_checkpoint(FULL)"); con.close()
+on_disk = b"".join(open(f, "rb").read() for f in (DB, DB + "-wal") if os.path.exists(f))
+ok("шифрование: текста работы, имени ученика и цитат нет в файле базы", all(
+    w.encode() not in on_disk for w in ("шкільній бібліотеці", "Марія Т.", "опитала тридцять", "Інший учень")))
+ok("шифрование: файл базы читает только владелец", oct(os.stat(DB).st_mode)[-3:] == "600", oct(os.stat(DB).st_mode))
 page = c.get(f"/papers/{v2}?lang=uk", headers=H)
 with A.app.test_request_context("/"):
     pct = A.originality_pct({"text": draft}, v2)
@@ -604,7 +610,7 @@ ok("версии: отчёт показывает прошлую версию, �
    "Попередня версія цієї роботи" in page.text and f'href="/papers/{v1}"' in page.text and pct == 100, pct)
 
 # Кто за что платит: хозяин через подписку Claude Code, остальные через ключ API; без Claude Code все через ключ
-con = sqlite3.connect(DB)
+con = A.connect()
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))
 con.close()
 which, A.SUBSCRIPTION_LOGINS, A.AI_BACKEND = A.shutil.which, {"teach1"}, ""
@@ -624,7 +630,7 @@ first = c.post("/api/login", json={"login": "lisa", "password": "pervyi-parol"})
 A.TEACHER_PASSWORD = "vtoroi-parol"; A.ensure_teacher()
 old = c.post("/api/login", json={"login": "lisa", "password": "pervyi-parol"}).status_code
 new = c.post("/api/login", json={"login": "lisa", "password": "vtoroi-parol"}).status_code
-con = sqlite3.connect(DB)
+con = A.connect()
 count = con.execute("SELECT COUNT(*) FROM users WHERE login='lisa'").fetchone()[0]
 reqs = con.execute("SELECT COUNT(*) FROM requirements r JOIN users u ON u.id=r.teacher_id WHERE u.login='lisa'").fetchone()[0]
 con.close()
@@ -652,7 +658,7 @@ ok("ссылку видит только учитель из настроек", 
    and mine["share_link"] == "", repr(lisa_page.get("share_link")))
 
 # повторная проверка во время идущей: список источников не меняется под ногами у модели
-con = sqlite3.connect(DB)
+con = A.connect()
 con.execute("UPDATE papers SET ai_status='pending' WHERE id=?", (pid,))
 con.execute("INSERT INTO findings(paper_id,kind,position,label) VALUES(?,'source',1,'Старий А. 2019.')", (pid,)); con.commit()
 before = con.execute("SELECT id FROM findings WHERE paper_id=? AND kind='source' ORDER BY id", (pid,)).fetchall()
@@ -684,7 +690,7 @@ resp = c.post("/papers/%d/recheck" % pid, headers={"Origin": "http://localhost"}
 ok("SEC-04 POST со своего сайта проходит", resp.status_code in (302, 200), f"код {resp.status_code}")
 
 # SEC-01: демонстрационный вход только смотрит
-con = sqlite3.connect(DB)
+con = A.connect()
 con.execute("UPDATE users SET readonly=1 WHERE id=1")
 con.commit(); con.close()
 ok("SEC-01 демо не может загружать и удалять",

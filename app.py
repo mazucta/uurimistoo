@@ -10,6 +10,7 @@ from urllib.parse import urlencode, urlparse
 
 from flask import Flask, g, request, render_template, abort, redirect, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
+import vault
 import anthropic
 import docx_read, export, images, originality, pdf_read, rubric, source_pdf
 from i18n import LANGS, translate
@@ -25,6 +26,17 @@ if os.path.exists(_ENV):
 
 DB_WAIT = 30  # секунд ждать, пока другой поток допишет в базу: по умолчанию 5, под нагрузкой не хватает
 DB = os.environ.get("DB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
+VAULT = vault.Vault(vault.load_key())  # работы учеников в базе зашифрованы, ключ не рядом с базой
+os.umask(0o077)  # база, её журнал и копии читаются только хозяином компьютера
+
+
+def connect():
+    """Соединение с базой: шифрует нужные колонки при записи (триггерами) и расшифровывает при чтении."""
+    con = VAULT.install(sqlite3.connect(DB, timeout=DB_WAIT))
+    con.execute("PRAGMA secure_delete=ON")  # удалённая работа затирается, а не остаётся в свободных страницах
+    return con
+
+
 app = Flask(__name__)
 app.json.ensure_ascii = False
 if os.environ.get("BEHIND_PROXY"):  # на Render схему и адрес клиента передаёт прокси
@@ -108,7 +120,7 @@ if (os.environ.get("DEMO") == "1" and not os.path.exists(DB)
     import shutil
     shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo.db"), DB)
 
-with sqlite3.connect(DB, timeout=DB_WAIT) as _c:
+with connect() as _c:
     def _add(table, column, decl):
         """Добавить колонку; если её уже добавил параллельный запуск (перезагрузка при правке кода), не падать."""
         try:
@@ -157,6 +169,14 @@ with sqlite3.connect(DB, timeout=DB_WAIT) as _c:
                         ("revise", "TEXT NOT NULL DEFAULT ''"), ("prev_content", "TEXT NOT NULL DEFAULT ''")):
         if _col not in {r[1] for r in _c.execute("PRAGMA table_info(materials)")}:
             _add('materials', _col, _type)
+    _c.executescript(vault.triggers())  # после пересборки таблиц: вместе с таблицей пропадают и её триггеры
+    _sealed = vault.seal_existing(_c)
+if _sealed:  # записи, лежавшие открыто, зашифрованы; VACUUM переписывает файл, чтобы старых страниц не осталось
+    with connect() as _c:
+        _c.execute("VACUUM")
+for _f in (DB, DB + "-wal", DB + "-shm"):
+    if os.path.exists(_f):
+        os.chmod(_f, 0o600)
 
 # Оформление: что именно требует школа. Профиль проверки может поменять любое число.
 FORMAT_DEFAULTS = {
@@ -433,8 +453,7 @@ def ai_request(rules):
 
 def db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB, timeout=DB_WAIT)
-        g.db.row_factory = sqlite3.Row
+        g.db = connect()
         g.db.execute("PRAGMA foreign_keys=ON")
     return g.db
 
@@ -771,7 +790,7 @@ def is_owner(teacher_id):
     """Учитель ли это, за которого платит подписка хозяина. Своё соединение: зовут и из фоновых потоков."""
     if not teacher_id or not SUBSCRIPTION_LOGINS:
         return False
-    with sqlite3.connect(DB, timeout=DB_WAIT) as con:
+    with connect() as con:
         row = con.execute("SELECT login FROM users WHERE id=?", (teacher_id,)).fetchone()
     return bool(row) and row[0].lower() in SUBSCRIPTION_LOGINS
 
@@ -978,7 +997,7 @@ def teacher_lessons(con, teacher_id, pid, r):
         return ""
     names = {n: name for n, name, _what in rubric.CRITERIA}
     lines = []
-    for p in con.execute("SELECT id, teacher, verdict FROM papers WHERE teacher_id=? AND id<>? AND teacher LIKE '{%' "
+    for p in con.execute("SELECT id, teacher, verdict FROM papers WHERE teacher_id=? AND id<>? AND teacher<>'{}' "
                          "ORDER BY uploaded_at DESC LIMIT 30", (teacher_id, pid)).fetchall():
         t = teacher_of(dict(p))
         ai = {f[0]: f[1] for f in con.execute("SELECT position, status FROM findings WHERE paper_id=? AND kind='rubric'",
@@ -1000,8 +1019,7 @@ def teacher_lessons(con, teacher_id, pid, r):
 
 def run_ai(pid):
     """Проверка в фоне. Имя ученика в модель не уходит: только текст работы и её источники."""
-    con = sqlite3.connect(DB, timeout=DB_WAIT)
-    con.row_factory = sqlite3.Row
+    con = connect()
     try:
         p = con.execute("""SELECT p.id, p.title, p.text, p.lang, p.profile_id, p.rules, p.uploaded_at, p.data, p.filename,
             u.id AS teacher_id,
@@ -1204,8 +1222,7 @@ def pictures_from_pdfs(con, m):
 
 def make_material(mid):
     """Готовим материал в фоне: учителю не нужно ждать ответа страницей."""
-    con = sqlite3.connect(DB, timeout=DB_WAIT)
-    con.row_factory = sqlite3.Row
+    con = connect()
     try:
         m = con.execute("SELECT * FROM materials WHERE id=?", (mid,)).fetchone()
         spec = MATERIALS[m["kind"]]
@@ -1300,7 +1317,7 @@ def resume_jobs():
     а не пропадают. Задачу, на которой процесс уже падал, второй раз не берём: иначе перезапуск пойдёт по кругу
     и каждый круг будет платным."""
     # ponytail: исполнитель один, в процессе сервера; при нескольких воркерах нужен захват задачи или внешняя очередь
-    with sqlite3.connect(DB, timeout=DB_WAIT) as con:
+    with connect() as con:
         con.execute("UPDATE papers SET ai_status='error', ai_note=? WHERE ai_status='pending' AND ai_note=?",
                     (INTERRUPTED, RESUMED))
         con.execute("UPDATE materials SET status='error', note=? WHERE status='pending' AND note=?",
@@ -1593,7 +1610,7 @@ def ensure_teacher():
     """Учитель из настроек сервера: заводится, если его нет, а пароль всегда берётся из настроек."""
     if not TEACHER_LOGIN or len(TEACHER_PASSWORD) < 8:
         return
-    with sqlite3.connect(DB, timeout=DB_WAIT) as con:
+    with connect() as con:
         row = con.execute("SELECT id, pw_hash FROM users WHERE login=?", (TEACHER_LOGIN,)).fetchone()
         if not row:
             create_teacher(con, TEACHER_NAME, TEACHER_LOGIN, TEACHER_PASSWORD, LANGS[0])
@@ -2609,7 +2626,7 @@ if __name__ == "__main__":
     if "--backup" in sys.argv:  # копия базы, безопасная при работающем сервере: python app.py --backup [папка]
         rest = [a for a in sys.argv[1:] if not a.startswith("--")]
         target = os.path.join(rest[0] if rest else os.path.dirname(DB), time.strftime("backup-%Y%m%d-%H%M%S.db"))
-        with sqlite3.connect(DB, timeout=DB_WAIT) as src, sqlite3.connect(target) as dst:
+        with connect() as src, sqlite3.connect(target) as dst:
             src.backup(dst)
         print("копия базы:", target)
         sys.exit()
@@ -2636,4 +2653,5 @@ if __name__ == "__main__":
     if not local or os.environ.get("WERKZEUG_RUN_MAIN") == "true":  # при автоперезагрузке код грузится дважды
         ensure_teacher()
         resume_jobs()
-    app.run(debug=local, host=host, port=int(os.environ.get("PORT", 8000)))
+    # отладчик Werkzeug не включаем никогда: через туннель на 127.0.0.1 он отдал бы любому консоль этого компьютера
+    app.run(debug=False, use_reloader=local, host=host, port=int(os.environ.get("PORT", 8000)))
