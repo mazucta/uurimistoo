@@ -615,13 +615,13 @@ con = A.connect()
 owner, guest = (con.execute("SELECT id FROM users WHERE login=?", (x,)).fetchone()[0] for x in ("teach1", "teach9"))
 con.close()
 which, A.SUBSCRIPTION_LOGINS, A.AI_BACKEND = A.shutil.which, {"teach1"}, ""
-os.environ["ANTHROPIC_API_KEY"] = "test"
+os.environ["ANTHROPIC_API_KEY"] = os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "test"  # на Linux (CI, Render) без токена Claude Code не считается
 A.shutil.which = lambda name: "/usr/local/bin/claude"
 routes = (A.backend(owner), A.backend(guest), A.backend())
 A.shutil.which = lambda name: None
 routes += (A.backend(owner),)
 A.shutil.which = which
-del os.environ["ANTHROPIC_API_KEY"]
+del os.environ["ANTHROPIC_API_KEY"], os.environ["CLAUDE_CODE_OAUTH_TOKEN"]
 ok("оплата: хозяин подпиской, другие ключом, без Claude Code все ключом", routes == ("cli", "api", "api", "api"), repr(routes))
 
 # Без регистрации: страницы нет, учитель из настроек заводится сам, пароль берётся из настроек
