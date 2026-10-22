@@ -89,6 +89,18 @@
     <button class="btn">{{ _('Разобрать файл') }}</button>
   </form>
 
+  <h3 class="sub-head">{{ _('Чему ассистент научился у вас') }}
+    <span class="muted small">{{ _('ваши баллы и выводы, где вы поправили модель: на них она опирается в следующих проверках, даже если работу удалить') }}</span></h3>
+  <div class="profiles">
+    <span>{{ _('Исправлений в копилке:') }} {{ lessons }}</span>
+    {% if lessons %}
+    <a class="btn small" href="/lessons">{{ _('Скачать файл') }}</a>
+    <form method="post" action="/lessons/clear" onsubmit="return confirm('{{ _('Стереть всё, чему ассистент научился? Следующие проверки пойдут без ваших прошлых исправлений.') }}')">
+      <button class="btn-link danger small">{{ _('Очистить') }}</button>
+    </form>
+    {% endif %}
+  </div>
+
   <h3 class="sub-head">{{ _('Что проверять') }}</h3>
   <form class="switches checks-form" method="post" action="/profiles/{{ profile.id }}/checks">
     {% for key, name in [('do_format', _('Оформление')), ('do_req', _('Условия учителя')),

@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS uploads(
   name TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL, pages INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS canva_tokens(
   user_id INTEGER PRIMARY KEY REFERENCES users(id), access TEXT NOT NULL, refresh TEXT NOT NULL, expires REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS lessons(
+  id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id), paper_id INTEGER NOT NULL,
+  paper_at REAL NOT NULL, lines TEXT NOT NULL, at REAL NOT NULL, UNIQUE(paper_id, paper_at));
 CREATE TABLE IF NOT EXISTS canva_states(
   state TEXT PRIMARY KEY, user_id INTEGER NOT NULL, verifier TEXT NOT NULL, next TEXT NOT NULL, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS findings(
@@ -993,29 +996,58 @@ def wants_ai(rules):
     return any(rules.get(key) for key in AI_PARTS)
 
 
-LESSONS = 25  # строк о прошлых исправлениях учителя в одном запросе: свежие важнее, длинный хвост только дорожает
+LESSONS = 40  # строк о прошлых исправлениях учителя в одном запросе: свежие важнее, длинный хвост только дорожает
+
+
+def lesson_lines(con, pid):
+    """Чем учитель поправил модель в этой работе: [вид, строка], вид rubric или authorship."""
+    p = con.execute("SELECT teacher, verdict FROM papers WHERE id=?", (pid,)).fetchone()
+    if not p:
+        return []
+    t, names, lines = teacher_of(dict(p)), {n: name for n, name, _what in rubric.CRITERIA}, []
+    ai = {f[0]: f[1] for f in con.execute("SELECT position, status FROM findings WHERE paper_id=? AND kind='rubric'",
+                                          (pid,)).fetchall()}
+    for n, m in (t.get("marks") or {}).items():
+        was = ai.get(int(n)) or "—" if n.isdigit() else "—"
+        if n.isdigit() and int(n) in names and (str(m.get("score")) != was or m.get("note")):
+            lines.append(["rubric", f"- {names[int(n)]}: ты предлагала {was}, учитель поставил {m.get('score')}"
+                          + (f" — «{m['note']}»" if m.get("note") else "")])
+    if t.get("verdict") and (t["verdict"] != p["verdict"] or t.get("verdict_note")):
+        lines.append(["authorship", f"- Авторство: ты решила {p['verdict'] or '—'}, учитель решил {t['verdict']}"
+                      + (f" — «{t['verdict_note']}»" if t.get("verdict_note") else "")])
+    return lines
+
+
+def remember(con, pid):
+    """Записать исправления учителя в копилку: она живёт отдельно и переживает удаление самой работы."""
+    p = con.execute("SELECT teacher_id, uploaded_at FROM papers WHERE id=?", (pid,)).fetchone()
+    lines = lesson_lines(con, pid)
+    if not p:
+        return
+    if not lines:
+        con.execute("DELETE FROM lessons WHERE paper_id=? AND paper_at=?", (pid, p["uploaded_at"]))
+        return
+    con.execute("INSERT INTO lessons(teacher_id,paper_id,paper_at,lines,at) VALUES(?,?,?,?,?) ON CONFLICT(paper_id,"
+                " paper_at) DO UPDATE SET lines=excluded.lines, at=excluded.at",
+                (p["teacher_id"], pid, p["uploaded_at"], json.dumps(lines, ensure_ascii=False), time.time()))
+
+
+def lessons_of(con, teacher_id, pid=None):
+    """Все исправления учителя, свежие первыми; без строк самой проверяемой работы."""
+    at = con.execute("SELECT uploaded_at FROM papers WHERE id=?", (pid,)).fetchone() if pid else None
+    out = []
+    for row in con.execute("SELECT paper_id, paper_at, lines FROM lessons WHERE teacher_id=? ORDER BY at DESC",
+                           (teacher_id,)).fetchall():
+        if not (at and row["paper_id"] == pid and row["paper_at"] == at[0]):
+            out += json.loads(row["lines"])
+    return out
 
 
 def teacher_lessons(con, teacher_id, pid, r):
     """Как учитель исправлял прошлые проверки модели: баллы, комментарии к ним, вывод об авторстве.
-    Из этого модель учится его мерке. Берутся только работы этого же учителя, имени ученика здесь нет."""
-    if not (r["do_rubric"] or r["do_authorship"]):
-        return ""
-    names = {n: name for n, name, _what in rubric.CRITERIA}
-    lines = []
-    for p in con.execute("SELECT id, teacher, verdict FROM papers WHERE teacher_id=? AND id<>? AND teacher<>'{}' "
-                         "ORDER BY uploaded_at DESC LIMIT 30", (teacher_id, pid)).fetchall():
-        t = teacher_of(dict(p))
-        ai = {f[0]: f[1] for f in con.execute("SELECT position, status FROM findings WHERE paper_id=? AND kind='rubric'",
-                                              (p["id"],)).fetchall()}
-        for n, m in (t.get("marks") or {}).items() if r["do_rubric"] else ():
-            was = ai.get(int(n)) or "—"
-            if n.isdigit() and int(n) in names and (str(m.get("score")) != was or m.get("note")):
-                lines.append(f"- {names[int(n)]}: ты предлагала {was}, учитель поставил {m.get('score')}"
-                             + (f" — «{m['note']}»" if m.get("note") else ""))
-        if r["do_authorship"] and t.get("verdict") and (t["verdict"] != p["verdict"] or t.get("verdict_note")):
-            lines.append(f"- Авторство: ты решила {p['verdict'] or '—'}, учитель решил {t['verdict']}"
-                         + (f" — «{t['verdict_note']}»" if t.get("verdict_note") else ""))
+    Из этого модель учится его мерке. Берутся только исправления этого же учителя, имени ученика здесь нет."""
+    wanted = {kind for kind, on in (("rubric", r["do_rubric"]), ("authorship", r["do_authorship"])) if on}
+    lines = [line for kind, line in lessons_of(con, teacher_id, pid) if kind in wanted]
     if not lines:
         return ""
     return ("\n\nКак этот учитель исправлял твои прошлые проверки других работ. Учись его мерке: ставь баллы и делай "
@@ -1337,6 +1369,9 @@ def resume_jobs():
         materials = [r[0] for r in con.execute("SELECT id FROM materials WHERE status='pending'")]
         con.execute("UPDATE papers SET ai_note=? WHERE ai_status='pending'", (RESUMED,))
         con.execute("UPDATE materials SET note=? WHERE status='pending'", (RESUMED,))
+        for (pid,) in con.execute("SELECT id FROM papers p WHERE teacher<>'{}' AND NOT EXISTS (SELECT 1 FROM lessons l"
+                                  " WHERE l.paper_id=p.id AND l.paper_at=p.uploaded_at)").fetchall():
+            remember(con, pid)  # исправления, сделанные до копилки
         purge_old(con)
     for target, ids in ((run_ai, papers), (make_material, materials)):
         for one in ids:
@@ -1636,7 +1671,7 @@ def papers_page(me, profile_id=None, papers=None):
     """Данные страницы проверок: список работ, профиль и его настройки."""
     chosen = profile_of(me["id"], profile_id if profile_id is not None else as_int(request.args, "profile"))
     return {"papers": papers if papers is not None else [], "backend": backend(me["id"]), "rules": RULES,
-            "retention": RETENTION_DAYS,
+            "retention": RETENTION_DAYS, "lessons": len(lessons_of(db(), me["id"])),
             "profiles": profiles_of(me["id"]), "profile": chosen, "settings": rules_of(chosen),
             "defaults": FORMAT_DEFAULTS, "requirements": requirements_of(me["id"], chosen and chosen["id"])}
 
@@ -1791,7 +1826,9 @@ def save_marks(me, pid):
     t["marks"] = {str(n): {"score": min(5, max(1, as_int(d, f"score-{n}"))),
                            "note": str(d.get(f"note-{n}") or "").strip()[:300]}
                   for n, _name, _what in rubric.CRITERIA if as_int(d, f"score-{n}") is not None}
-    run("UPDATE papers SET teacher=? WHERE id=?", json.dumps(t, ensure_ascii=False), pid)
+    with db():
+        db().execute("UPDATE papers SET teacher=? WHERE id=?", (json.dumps(t, ensure_ascii=False), pid))
+        remember(db(), pid)
     return done(f"/papers/{pid}#score")
 
 
@@ -1802,7 +1839,9 @@ def save_verdict(me, pid):
     if d.get("verdict") not in ("student", "unclear", "ai"):
         abort(400)
     t["verdict"], t["verdict_note"] = d["verdict"], str(d.get("note") or "").strip()[:500]
-    run("UPDATE papers SET teacher=? WHERE id=?", json.dumps(t, ensure_ascii=False), pid)
+    with db():
+        db().execute("UPDATE papers SET teacher=? WHERE id=?", (json.dumps(t, ensure_ascii=False), pid))
+        remember(db(), pid)
     return done(f"/papers/{pid}#authorship")
 
 
@@ -1822,6 +1861,20 @@ def match_line(x, t):
 
 
 VERDICTS = {"student": "похоже на работу ученика", "ai": "есть признаки текста от ИИ", "unclear": "не понять"}
+
+
+@view("/lessons")
+def lessons_file(me):
+    """Копилка исправлений учителя одним файлом: то, на что опирается модель в следующих проверках."""
+    text = "\n".join(line for _kind, line in lessons_of(db(), me["id"])) or translate("Исправлений пока нет", lang())
+    return send_file(io.BytesIO(text.encode()), as_attachment=True, download_name="lessons.txt", mimetype="text/plain")
+
+
+@view("/lessons/clear", method="POST")
+def lessons_clear(me):
+    with db():
+        db().execute("DELETE FROM lessons WHERE teacher_id=?", (me["id"],))
+    return done("/papers#profile")
 
 
 @view("/papers/<int:pid>/file")

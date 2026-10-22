@@ -497,6 +497,7 @@ marked = con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_sta
 con.execute("INSERT INTO findings(paper_id,kind,position,ref,label,status) VALUES(?,'rubric',3,3,'x','2')", (marked,))
 con.execute("INSERT INTO papers(teacher_id,profile_id,title,text,ai_status,uploaded_at,teacher) VALUES(2,1,'Чужа','т','done',7,?)",
             ('{"marks": {"1": {"score": 1, "note": "ЧУЖИЙ КОМЕНТАР"}}}',))
+A.remember(con, marked); A.remember(con, marked + 1)  # так их записывают /marks и /verdict
 con.commit()
 lessons = A.teacher_lessons(con, 1, -1, {**A.CHECK_DEFAULTS})
 none_ = A.teacher_lessons(con, 1, -1, {**A.CHECK_DEFAULTS, "do_rubric": 0, "do_authorship": 0})
@@ -504,6 +505,15 @@ con.close()
 ok("правки учителя: балл, комментарий и вывод об авторстве идут в модель",
    "ты предлагала 2, учитель поставил 4 — «теорію пов’язано з опитуванням»" in lessons
    and "ты решила ai, учитель решил student" in lessons, lessons)
+con = A.connect()
+con.execute("DELETE FROM findings WHERE paper_id=?", (marked,)); con.execute("DELETE FROM papers WHERE id=?", (marked,))
+con.commit()
+kept = A.teacher_lessons(con, 1, -1, {**A.CHECK_DEFAULTS})
+own = A.teacher_lessons(con, 1, marked, {**A.CHECK_DEFAULTS})  # номер удалённой достался бы новой: её строки не свои
+sealed = con.execute("SELECT 1 FROM lessons WHERE lines LIKE '%опитуванням%'").fetchone()
+con.close()
+ok("копилка: исправления переживают удаление работы и лежат зашифрованными", kept == lessons and own == lessons
+   and not sealed, kept)
 ok("правки учителя: чужие не попадают, без оценки и авторства ничего не уходит", "ЧУЖИЙ" not in lessons and none_ == "", lessons)
 
 # PDF-источник: программа скачивает его сама, текст уходит в модель, источник отмечен как существующий

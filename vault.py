@@ -24,6 +24,7 @@ COLUMNS = {
     "papers": ("student", "title", "filename", "text", "data", "verdict_note", "sources_edit", "teacher", "ai_note"),
     "findings": ("label", "note", "extra"),
     "canva_tokens": ("access", "refresh"),
+    "lessons": ("lines",),
 }
 
 
@@ -139,7 +140,8 @@ if __name__ == "__main__":
     con.executescript("CREATE TABLE papers(id INTEGER PRIMARY KEY, student TEXT, title TEXT, filename TEXT, text TEXT,"
                       " data BLOB, verdict_note TEXT, sources_edit TEXT, teacher TEXT, ai_note TEXT, ai_status TEXT);"
                       "CREATE TABLE findings(id INTEGER PRIMARY KEY, label TEXT, note TEXT, extra TEXT);"
-                      "CREATE TABLE canva_tokens(user_id INTEGER PRIMARY KEY, access TEXT, refresh TEXT);")
+                      "CREATE TABLE canva_tokens(user_id INTEGER PRIMARY KEY, access TEXT, refresh TEXT);"
+                      "CREATE TABLE lessons(id INTEGER PRIMARY KEY, lines TEXT);")
     con.execute("INSERT INTO papers(student,text,data,ai_status) VALUES('Петренко','старый открытый текст',?, 'x')",
                 (b"%PDF old",))
     con.executescript(triggers())
