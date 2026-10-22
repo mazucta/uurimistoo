@@ -10,6 +10,7 @@ os.environ["DB"], os.environ["DEMO"] = DB, "0"
 os.environ["DATA_KEY"] = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="  # свой ключ: связку ключей не трогаем
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import app as A
+_RealThread = A.threading.Thread
 A.threading.Thread = type("T", (), {"__init__": lambda self, **k: None, "start": lambda self: None})  # без ИИ-запросов
 c = A.app.test_client()
 failed = []
@@ -181,9 +182,9 @@ con = A.connect()
 row = con.execute("SELECT kind, LENGTH(topic), count, LENGTH(extra), teacher_id FROM materials WHERE id=?", (mid,)).fetchone()
 con.close()
 ok("чат: материал заведён с теми же пределами, что у формы", row == ("quiz", 300, 30, 1000, 1), repr(row))
-ok("материал: подготовка действительно запущена", {"target": A.make_material, "args": (mid,), "daemon": True} in started, repr(started[-2:]))
+ok("материал: подготовка действительно запущена", {"target": A.queued, "args": (A.make_material, mid), "daemon": True} in started, repr(started[-2:]))
 fid = c.post("/api/materials", headers=H, json={"kind": "kahoot", "topic": "Фотосинтез"}).json.get("id")
-ok("материал из формы тоже запускается", {"target": A.make_material, "args": (fid,), "daemon": True} in started, repr(started[-2:]))
+ok("материал из формы тоже запускается", {"target": A.queued, "args": (A.make_material, fid), "daemon": True} in started, repr(started[-2:]))
 
 # Приложения к помощнику: тип по содержимому, чужие не берутся, в модель уходят блоками, к материалу привязываются
 import io as _io
@@ -644,22 +645,19 @@ ok("учитель из настроек: заводится один раз с 
    (first, old, new, count) == (200, 400, 200, 1) and reqs > 0, f"{first} {old} {new} {count} {reqs}")
 A.REGISTRATION = True
 
-# Ссылка для учителей: без секрета 404, с секретом свой кабинет, повторный заход не плодит кабинеты
-A.ACCESS_KEY = "sekret-ssylki"
-bare = A.app.test_client()
-wrong = bare.get("/k/ne-tot").status_code
-go = bare.get("/k/sekret-ssylki")
-again = bare.get("/k/sekret-ssylki")
-mine = bare.get("/api/papers").json
-other_tab = A.app.test_client(); other_tab.get("/k/sekret-ssylki")
-theirs = other_tab.get("/api/papers").json
-ok("ссылка: чужой секрет 404, свой даёт кабинет, повтор не плодит", wrong == 404 and go.status_code == 302
-   and again.headers["Location"].endswith("/papers") and mine["papers"] == [] and theirs["papers"] == [],
-   f"{wrong} {go.status_code} {again.headers.get('Location')}")
-lisa_page = c.get("/api/papers", headers={"Authorization": "Bearer " + c.post("/api/login",
-    json={"login": "lisa", "password": "vtoroi-parol"}).json["token"]}).json
-ok("ссылку видит только учитель из настроек", lisa_page["share_link"].endswith("/k/sekret-ssylki")
-   and mine["share_link"] == "", repr(lisa_page.get("share_link")))
+# Очередь: при одном слоте вторая задача ждёт, пока не закончится первая
+import threading as _th
+_Th = _RealThread
+A.AI_SLOTS, _order, _gate = _th.BoundedSemaphore(1), [], _th.Event()
+_t1 = _Th(target=A.queued, args=(lambda n: (_gate.wait(5), _order.append(n)), 1)); _t1.start()
+time.sleep(0.1)
+_t2 = _Th(target=A.queued, args=(_order.append, 2)); _t2.start()
+time.sleep(0.1); _waited = _order == []; _gate.set(); _t1.join(); _t2.join()
+ok("очередь: задачи по одной", _waited and _order == [1, 2], repr(_order))
+A.AI_SLOTS = _th.BoundedSemaphore(2)
+
+# Входа по ссылке нет: адрес /k/ не открывает кабинет
+ok("вход по ссылке убран", A.app.test_client().get("/k/sekret-ssylki").status_code == 404)
 
 # повторная проверка во время идущей: список источников не меняется под ногами у модели
 con = A.connect()

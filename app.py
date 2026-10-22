@@ -51,8 +51,6 @@ TEACHER_NAME = os.environ.get("TEACHER_NAME", "") or TEACHER_LOGIN
 # Ещё учителя с сервера, по строке на каждого: «Имя:логин:пароль» (в пароле двоеточие допустимо)
 TEACHERS = [x.strip().split(":", 2) for x in os.environ.get("TEACHERS", "").splitlines() if x.count(":") >= 2]
 REGISTER_CODE = os.environ.get("REGISTER_CODE", "")
-# Ссылка для учителей: /k/<ACCESS_KEY> даёт свой кабинет без регистрации. Пусто: ссылки нет.
-ACCESS_KEY = os.environ.get("ACCESS_KEY", "")  # пусто: регистрация открыта
 LOGIN_TRIES = 8              # столько неудачных попыток входа подряд,
 LOGIN_PAUSE = 15 * 60        # потом логин отдыхает столько секунд
 REGISTER_TRIES = 5           # регистраций с одного адреса в час
@@ -173,6 +171,8 @@ with connect() as _c:
             _add('materials', _col, _type)
     _c.executescript(vault.triggers())  # после пересборки таблиц: вместе с таблицей пропадают и её триггеры
     _sealed = vault.seal_existing(_c)
+    # входа по ссылке больше нет: кабинеты, открытые по ней, выходят из системы
+    _c.execute("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE login LIKE 'link-%')")
 if _sealed:  # записи, лежавшие открыто, зашифрованы; VACUUM переписывает файл, чтобы старых страниц не осталось
     with connect() as _c:
         _c.execute("VACUUM")
@@ -220,6 +220,8 @@ SUBSCRIPTION_LOGINS = {x.strip().lower() for x in os.environ.get("SUBSCRIPTION_L
 AI_BACKEND = os.environ.get("AI_BACKEND", "")  # api, cli или пусто: выбрать само
 CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
 CLI_TIMEOUT = 20 * 60
+# Сколько проверок и материалов идёт одновременно, остальные ждут: каждый Claude Code занимает сотни МБ памяти
+AI_SLOTS = threading.BoundedSemaphore(int(os.environ.get("AI_PARALLEL", 2)))
 SPEAK = {"et": "eesti keeles (по-эстонски)", "uk": "українською мовою (по-украински)"}  # язык ответа модели
 AI_INTRO = """Ты помогаешь учителю проверить исследовательскую работу гимназиста 12 класса (uurimistöö). Работа и её список источников приложены.
 
@@ -1312,8 +1314,13 @@ def start_material(mid, teacher_id):
         run("UPDATE materials SET status='error', note=? WHERE id=?",
             "слишком много проверок за час, попробуйте позже", mid)
         return False
-    threading.Thread(target=make_material, args=(mid,), daemon=True).start()
+    threading.Thread(target=queued, args=(make_material, mid), daemon=True).start()
     return True
+
+
+def queued(job, one):
+    with AI_SLOTS:
+        job(one)
 
 
 def resume_jobs():
@@ -1333,7 +1340,7 @@ def resume_jobs():
         purge_old(con)
     for target, ids in ((run_ai, papers), (make_material, materials)):
         for one in ids:
-            threading.Thread(target=target, args=(one,), daemon=True).start()
+            threading.Thread(target=queued, args=(target, one), daemon=True).start()
     return len(papers) + len(materials)
 
 
@@ -1379,7 +1386,7 @@ def start_ai(pid, teacher_id, rules=None):
         run("UPDATE papers SET ai_status='error', ai_note=? WHERE id=?",
             "слишком много проверок за час, попробуйте позже", pid)
         return False
-    threading.Thread(target=run_ai, args=(pid,), daemon=True).start()
+    threading.Thread(target=queued, args=(run_ai, pid), daemon=True).start()
     return True
 
 
@@ -1581,23 +1588,6 @@ def register():
     return start_session(q1("SELECT id, name, login, lang FROM users WHERE id=?", uid))
 
 
-@app.get("/k/<key>")
-def access_link(key):
-    """Вход по ссылке: кто её открыл, тот получает свой кабинет; свои работы видит только он.
-    Без секретной части адреса сюда не попасть, поэтому сайт не открыт всем подряд."""
-    # ponytail: кабинет держится на cookie браузера; почистил cookie или сменил устройство — начинаешь с чистого
-    if not ACCESS_KEY or not secrets.compare_digest(key.encode(), ACCESS_KEY.encode()):
-        abort(404)
-    if current_user():
-        return redirect("/papers")
-    if not used(f"register:{request.remote_addr}", 3600, REGISTER_TRIES):
-        return translate("Слишком много регистраций с этого адреса. Попробуйте через час", lang()), 429
-    with db():
-        uid = create_teacher(db(), translate("Учитель", lang()), "link-" + secrets.token_hex(6),
-                             secrets.token_urlsafe(24), lang())  # пароля никто не знает: вход только по ссылке
-    return start_session(q1("SELECT id, name, login, lang FROM users WHERE id=?", uid))
-
-
 def create_teacher(con, name, login_, pw, lang_):
     """Учитель вместе с профилем проверки и условиями по умолчанию на его языке."""
     uid = con.execute("INSERT INTO users(name,login,pw_hash,lang,created_at) VALUES(?,?,?,?,?)",
@@ -1647,7 +1637,6 @@ def papers_page(me, profile_id=None, papers=None):
     chosen = profile_of(me["id"], profile_id if profile_id is not None else as_int(request.args, "profile"))
     return {"papers": papers if papers is not None else [], "backend": backend(me["id"]), "rules": RULES,
             "retention": RETENTION_DAYS,
-            "share_link": request.host_url + "k/" + ACCESS_KEY if ACCESS_KEY and me["login"] == TEACHER_LOGIN else "",
             "profiles": profiles_of(me["id"]), "profile": chosen, "settings": rules_of(chosen),
             "defaults": FORMAT_DEFAULTS, "requirements": requirements_of(me["id"], chosen and chosen["id"])}
 

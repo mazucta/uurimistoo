@@ -18,6 +18,8 @@ services:
         value: /data/data.db
       - key: DATA_KEY
         sync: false          # ключ шифрования работ (python vault.py --new-key); потерян ключ — работы не прочитать
+      - key: AI_PARALLEL
+        value: "1"           # 512 МБ на starter: один Claude Code за раз, остальные проверки ждут очереди
       - key: BEHIND_PROXY
         value: "1"
       - key: PYTHON_VERSION
@@ -34,12 +36,10 @@ services:
       # - key: CANVA_REDIRECT
       #   value: https://uurimistoo.onrender.com/canva/callback
       - key: REGISTRATION
-        value: "off"         # регистрации нет: единственный вход это учитель ниже
+        value: "off"         # регистрации нет: входят только учителя ниже
       - key: TEACHER_LOGIN
         sync: false          # логин и пароль задаются в панели Render; учитель заводится сам при каждом запуске
       - key: TEACHER_PASSWORD
         sync: false
       - key: TEACHERS
         sync: false          # ещё учителя, по строке «Имя:логин:пароль»
-      - key: ACCESS_KEY
-        generateValue: true  # секретная часть ссылки для учителей; саму ссылку учитель выше видит на странице проверок
