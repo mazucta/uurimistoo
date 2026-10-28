@@ -5,8 +5,9 @@
 <nav class="crumbs"><a href="/tests">{{ _('Тесты') }}</a> / {{ t.title }}</nav>
 <div class="page-head">
   <div><h1>{{ t.title }}</h1>
-    <p class="muted">{{ questions|length }} {{ _('вопросов') }} · {{ t.created_at|dt }} · {{ _('открыт') if t.open else _('закрыт') }}</p></div>
+    <p class="muted">{{ questions|length }} {{ _('вопросов') }}{% if t.minutes %} · {{ t.minutes }} {{ _('мин.') }}{% endif %} · {{ t.created_at|dt }} · {{ _('открыт') if t.open else _('закрыт') }}</p></div>
   <div class="row-meta">
+    {% if attempts %}<a class="btn" href="/tests/{{ t.id }}/results">{{ _('Скачать результаты (Excel)') }}</a>{% endif %}
     <form method="post" action="/tests/{{ t.id }}/open"><button class="btn">{{ _('Закрыть тест') if t.open else _('Открыть тест') }}</button></form>
     <form method="post" action="/tests/{{ t.id }}/delete" onsubmit="return confirm('{{ _('Удалить тест вместе с ответами учеников?') }}')"><button class="btn-link danger">{{ _('Удалить') }}</button></form>
   </div>
@@ -29,15 +30,15 @@
     {% for a in attempts %}
     <tr>
       <td>{{ a.student }}</td>
-      <td>{% if a.finished_at %}{{ a.score }} / {{ a.total }}{% else %}<span class="muted">{{ _('проходит') }}</span>{% endif %}</td>
+      <td>{% if a.finished_at %}{{ a.score }} / {{ a.total }}{% if a.unmarked %}<br><span class="muted small">{{ _('не оценено') }}: {{ a.unmarked }}</span>{% endif %}{% else %}<span class="muted">{{ _('проходит') }}</span>{% endif %}</td>
       <td class="{{ 'bad' if a.away_count }}">{{ a.away_count }} {{ _('раз') }}{% if a.away_now %} · <b>{{ _('сейчас не на вкладке') }}</b>{% endif %}</td>
       <td class="{{ 'bad' if a.away >= 1 }}">{{ a.away|span }}</td>
       <td class="{{ 'bad' if a.copy_tries }}">{{ a.copy_tries }}</td>
       <td>{{ a.started_at|dt }}</td>
-      <td>{{ (a.finished_at - a.started_at)|span if a.finished_at else '—' }}</td>
+      <td class="{{ 'bad' if a.late }}">{{ (a.finished_at - a.started_at)|span if a.finished_at else '—' }}{% if a.late %} · {{ _('дольше лимита') }}{% endif %}</td>
     </tr>
     {% if a.finished_at %}
-    <tr><td colspan="7"><details><summary class="small">{{ _('Ответы') }}</summary>
+    <tr id="a{{ a.id }}"><td colspan="7"><details {{ 'open' if a.unmarked }}><summary class="small">{{ _('Ответы') }}</summary>
       <ol class="answers">
       {% for q in questions %}
         <li><b>{{ q.q }}</b><br>
@@ -45,6 +46,12 @@
           <span class="{{ 'good' if mark == true else 'bad' if mark == false }}">{{ a.answers[loop.index0] or '—' }}
             {{ '✓' if mark == true else '✗' if mark == false else '' }}</span>
           {% if mark != true and q.answer %}<span class="muted small"> · {{ _('правильно') if q.kind != 'open' else _('что должно прозвучать') }}: {{ q.answer }}</span>{% endif %}
+          <form class="mark" method="post" action="/tests/{{ t.id }}/attempts/{{ a.id }}/mark">
+            <input type="hidden" name="q" value="{{ loop.index0 }}">
+            <button class="btn small {{ 'on' if a.teacher.get(loop.index0|string) == true }}" name="mark" value="1" title="{{ _('Засчитать') }}">✓</button>
+            <button class="btn small {{ 'on' if a.teacher.get(loop.index0|string) == false }}" name="mark" value="0" title="{{ _('Не засчитывать') }}">✗</button>
+            {% if (loop.index0|string) in a.teacher %}<button class="btn-link small" name="mark" value="">{{ _('как было') }}</button>{% endif %}
+          </form>
         </li>
       {% endfor %}
       </ol>

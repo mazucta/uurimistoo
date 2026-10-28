@@ -13,6 +13,8 @@
     <select name="material" aria-label="{{ _('Вопросы для теста') }}" required>
       {% for m in sources %}<option value="{{ m.id }}">{{ m.topic }} · {{ _('Квиз для Kahoot') if m.kind == 'kahoot' else _('Проверочные вопросы') }}</option>{% endfor %}
     </select>
+    <label class="small">{{ _('Минут на тест') }} <input type="number" name="minutes" min="0" max="300" value="0" style="width:5em"></label>
+    <span class="muted small">{{ _('0 — без ограничения') }}</span>
     <button class="btn primary">{{ _('Создать тест') }}</button>
   </form>
   {% else %}

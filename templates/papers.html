@@ -101,6 +101,12 @@
     {% endif %}
   </div>
 
+  {% if owner %}
+  <h3 class="sub-head">{{ _('Резервная копия') }}
+    <span class="muted small">{{ _('сервер сам делает копию базы раз в сутки и хранит последние семь. Скачайте копию и сохраните отдельно: она зашифрована, прочитать её можно только с ключом DATA_KEY') }}</span></h3>
+  <div class="profiles"><a class="btn small" href="/backup">{{ _('Скачать копию базы') }}</a></div>
+  {% endif %}
+
   <h3 class="sub-head">{{ _('Что проверять') }}</h3>
   <form class="switches checks-form" method="post" action="/profiles/{{ profile.id }}/checks">
     {% for key, name in [('do_format', _('Оформление')), ('do_req', _('Условия учителя')),

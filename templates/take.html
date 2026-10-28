@@ -15,10 +15,11 @@
   </form>
 {% else %}
   <form class="no-copy" method="post" id="testForm">
+    {% if left is not none %}<div class="timer banner warn" id="timer" data-left="{{ left }}">{{ _('Осталось времени') }}: <b id="timerLeft"></b></div>{% endif %}
     {% for q in questions %}
     <fieldset class="card">
       <legend><b>{{ loop.index }}. {{ q.q }}</b></legend>
-      {% set n = loop.index0 %}
+      {% set n = q.n %}
       {% if q.kind == 'choice' and q.options %}
         {% for o in q.options %}<label class="choice"><input type="radio" name="a{{ n }}" value="{{ o }}"> {{ o }}</label>{% endfor %}
       {% elif q.kind == 'short' %}
@@ -45,6 +46,16 @@
     }
     document.addEventListener('contextmenu', e => e.preventDefault())
     document.addEventListener('dragstart', e => e.preventDefault())
+    const timer = document.getElementById('timer')
+    if (timer) {  // время вышло: ответы уходят сами, без вопроса «Отправить?»
+      const end = Date.now() + Number(timer.dataset.left) * 1000, out = document.getElementById('timerLeft')
+      const tick = () => {
+        const s = Math.max(0, Math.round((end - Date.now()) / 1000))
+        out.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0')
+        if (s <= 0) { asking = true; document.getElementById('testForm').submit() } else setTimeout(tick, 1000)
+      }
+      tick()
+    }
     document.getElementById('testForm').addEventListener('submit', e => {
       asking = true
       if (!confirm({{ _('Отправить ответы? Изменить их потом нельзя.')|tojson }})) e.preventDefault()

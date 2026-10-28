@@ -5,3 +5,4 @@ server.log
 backup-*.db
 .env
 .cli/
+backups/

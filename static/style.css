@@ -427,3 +427,6 @@ a.stat.ring-tile { align-items: center; text-align: center; gap: 6px; }
 .banner input.share { margin-top: 6px; font-size: 14px; background: var(--card); width: 100%; }
 .qr { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .qr img { background: #fff; border-radius: 8px; display: block; }
+.take .timer { position: sticky; top: 8px; z-index: 2; }
+.answers form.mark { display: inline-flex; gap: 4px; margin-left: 8px; }
+.answers form.mark .btn.on { background: var(--blue); color: #fff; border-color: var(--blue); }

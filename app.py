@@ -109,12 +109,14 @@ CREATE TABLE IF NOT EXISTS lessons(
   paper_at REAL NOT NULL, lines TEXT NOT NULL, at REAL NOT NULL, UNIQUE(paper_id, paper_at));
 CREATE TABLE IF NOT EXISTS tests(
   id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id), code TEXT NOT NULL UNIQUE,
-  title TEXT NOT NULL, questions TEXT NOT NULL, open INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL);
+  title TEXT NOT NULL, questions TEXT NOT NULL, open INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL,
+  minutes INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS attempts(
   id INTEGER PRIMARY KEY, test_id INTEGER NOT NULL REFERENCES tests(id), token TEXT NOT NULL UNIQUE,
   student TEXT NOT NULL, answers TEXT NOT NULL DEFAULT '', score INTEGER, total INTEGER NOT NULL DEFAULT 0,
   away_count INTEGER NOT NULL DEFAULT 0, away_seconds REAL NOT NULL DEFAULT 0, away_since REAL,
-  copy_tries INTEGER NOT NULL DEFAULT 0, started_at REAL NOT NULL, finished_at REAL);
+  copy_tries INTEGER NOT NULL DEFAULT 0, started_at REAL NOT NULL, finished_at REAL,
+  orders TEXT NOT NULL DEFAULT '', marks TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS canva_states(
   state TEXT PRIMARY KEY, user_id INTEGER NOT NULL, verifier TEXT NOT NULL, next TEXT NOT NULL, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS findings(
@@ -176,6 +178,11 @@ with connect() as _c:
         _add('uploads', 'parent', 'INTEGER NOT NULL DEFAULT 0')
     if "pages" not in {r[1] for r in _c.execute("PRAGMA table_info(uploads)")}:  # страницы PDF, 2026-10-06
         _add('uploads', 'pages', 'INTEGER NOT NULL DEFAULT 0')
+    # тесты, 2026-10-29: время на тест, порядок вопросов у ученика, отметки учителя
+    for _t, _col, _type in (("tests", "minutes", "INTEGER NOT NULL DEFAULT 0"), ("attempts", "orders", "TEXT NOT NULL DEFAULT ''"),
+                            ("attempts", "marks", "TEXT NOT NULL DEFAULT '{}'")):
+        if _col not in {r[1] for r in _c.execute(f"PRAGMA table_info({_t})")}:
+            _add(_t, _col, _type)
     # revise: просьба учителя переделать материал, prev_content: версия до неё, чтобы вернуть как было
     for _col, _type in (("canva_url", "TEXT NOT NULL DEFAULT ''"), ("canva_at", "REAL NOT NULL DEFAULT 0"),
                         ("revise", "TEXT NOT NULL DEFAULT ''"), ("prev_content", "TEXT NOT NULL DEFAULT ''")):
@@ -1389,6 +1396,38 @@ def resume_jobs():
 
 
 _purged_at = 0.0
+BACKUP_DIR = os.environ.get("BACKUP_DIR") or os.path.join(os.path.dirname(DB), "backups")
+BACKUP_KEEP = int(os.environ.get("BACKUP_KEEP", 7))  # сколько суточных копий держать
+
+
+def backup(folder=None):
+    """Копия базы, безопасная при работающем сервере. Зашифрована тем же ключом, что и база."""
+    folder = folder or BACKUP_DIR
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, time.strftime("backup-%Y%m%d-%H%M%S.db"))
+    dst = sqlite3.connect(target)
+    try:
+        with connect() as src:
+            src.backup(dst)
+    finally:
+        dst.close()
+    os.chmod(target, 0o600)
+    return target
+
+
+def backup_daily():
+    """Раз в сутки копия базы рядом с ней (на Render — на том же диске), старше BACKUP_KEEP копий удаляются."""
+    while True:
+        try:
+            have = sorted(f for f in os.listdir(BACKUP_DIR) if f.startswith("backup-") and f.endswith(".db")) \
+                if os.path.isdir(BACKUP_DIR) else []
+            if not have or time.time() - os.path.getmtime(os.path.join(BACKUP_DIR, have[-1])) > 86400:
+                have.append(os.path.basename(backup()))
+            for old in have[:-BACKUP_KEEP]:
+                os.remove(os.path.join(BACKUP_DIR, old))
+        except Exception:
+            app.logger.exception("резервная копия базы не удалась")
+        time.sleep(3600)
 
 
 def purge_old(con):
@@ -1682,6 +1721,7 @@ def papers_page(me, profile_id=None, papers=None):
     chosen = profile_of(me["id"], profile_id if profile_id is not None else as_int(request.args, "profile"))
     return {"papers": papers if papers is not None else [], "backend": backend(me["id"]), "rules": RULES,
             "retention": RETENTION_DAYS, "lessons": len(lessons_of(db(), me["id"])),
+            "owner": bool(TEACHER_LOGIN) and me["login"] == TEACHER_LOGIN,
             "profiles": profiles_of(me["id"]), "profile": chosen, "settings": rules_of(chosen),
             "defaults": FORMAT_DEFAULTS, "requirements": requirements_of(me["id"], chosen and chosen["id"])}
 
@@ -1871,6 +1911,18 @@ def match_line(x, t):
 
 
 VERDICTS = {"student": "похоже на работу ученика", "ai": "есть признаки текста от ИИ", "unclear": "не понять"}
+
+
+@view("/backup")
+def backup_file(me):
+    """Свежая копия всей базы для хранения вне сервера. Только владельцу сайта (TEACHER_LOGIN); копия
+    зашифрована, без ключа DATA_KEY её не прочитать."""
+    if not TEACHER_LOGIN or me["login"] != TEACHER_LOGIN:
+        abort(404)
+    with tempfile.TemporaryDirectory() as folder:
+        data = open(backup(folder), "rb").read()
+    return send_file(io.BytesIO(data), as_attachment=True, mimetype="application/octet-stream",
+                     download_name=time.strftime("uurimistoo-backup-%Y%m%d.db"))
 
 
 @view("/lessons")
@@ -2682,17 +2734,48 @@ def plain(text):
     return re.sub(r"[\W_]+", " ", str(text or "")).strip().casefold()
 
 
-def score_test(questions, answers):
-    """Баллы за то, что проверяется само: выбор и короткий ответ. Развёрнутый ответ оценивает учитель."""
+def score_test(questions, answers, teacher=None):
+    """Баллы за то, что проверяется само: выбор и короткий ответ. Развёрнутый ответ оценивает учитель;
+    его отметка (teacher: {"номер": true/false}) перекрывает и автоматическую, если та ошиблась."""
     marks, score, total = [], 0, 0
     for i, q in enumerate(questions):
         given = answers[i] if i < len(answers) else ""
         right = None
         if q["kind"] in ("choice", "short") and q["answer"]:
             right = plain(given) == plain(q["answer"]) and bool(plain(given))
+        right = (teacher or {}).get(str(i), right)
+        if right is not None:
             score, total = score + right, total + 1
         marks.append(right)
     return score, total, marks
+
+
+def shuffled(questions):
+    """Свой порядок вопросов и вариантов у каждого ученика: соседу труднее подсказать «третий, ответ Б»."""
+    rnd = secrets.SystemRandom()
+    order = list(range(len(questions)))
+    rnd.shuffle(order)
+    options = {}
+    for i, q in enumerate(questions):
+        options[str(i)] = list(range(len(q["options"])))
+        rnd.shuffle(options[str(i)])
+    return {"q": order, "o": options}
+
+
+def attempt_rows(t):
+    """Попытки теста с итогом: автоматические отметки плюс отметки учителя."""
+    questions, out = json.loads(t["questions"]), []
+    for a in db().execute("SELECT * FROM attempts WHERE test_id=? ORDER BY started_at DESC", (t["id"],)):
+        a = dict(a)
+        a["answers"] = json.loads(a["answers"] or "[]")
+        a["teacher"] = json.loads(a["marks"] or "{}")
+        a["score"], a["total"], a["marks"] = score_test(questions, a["answers"], a["teacher"])
+        a["unmarked"] = sum(m is None for m in a["marks"]) if a["finished_at"] else 0
+        a["away_now"] = bool(a["away_since"]) and not a["finished_at"]
+        a["away"] = a["away_seconds"] + (time.time() - a["away_since"] if a["away_now"] else 0)
+        a["late"] = bool(t["minutes"] and a["finished_at"] and a["finished_at"] - a["started_at"] > t["minutes"] * 60 + 60)
+        out.append(a)
+    return questions, out
 
 
 def own_test(me, tid):
@@ -2717,24 +2800,52 @@ def test_create(me):
     questions = test_questions(m)
     if not questions:
         abort(400)
-    tid = run("INSERT INTO tests(teacher_id,code,title,questions,created_at) VALUES(?,?,?,?,?)", me["id"],
-              secrets.token_urlsafe(9), m["topic"], json.dumps(questions, ensure_ascii=False), time.time()).lastrowid
+    minutes = min(max(as_int(body(), "minutes", 0) or 0, 0), 300)  # 0: без ограничения
+    tid = run("INSERT INTO tests(teacher_id,code,title,questions,minutes,created_at) VALUES(?,?,?,?,?,?)", me["id"],
+              secrets.token_urlsafe(9), m["topic"], json.dumps(questions, ensure_ascii=False), minutes,
+              time.time()).lastrowid
     return done(f"/tests/{tid}", id=tid)
 
 
 @view("/tests/<int:tid>", "test.html")
 def test_page(me, tid):
     t = own_test(me, tid)
-    questions = json.loads(t["questions"])
-    attempts = []
-    for a in db().execute("SELECT * FROM attempts WHERE test_id=? ORDER BY started_at DESC", (tid,)):
-        a = dict(a)
-        a["answers"] = json.loads(a["answers"] or "[]")
-        a["marks"] = score_test(questions, a["answers"])[2]
-        a["away_now"] = bool(a["away_since"]) and not a["finished_at"]
-        a["away"] = a["away_seconds"] + (time.time() - a["away_since"] if a["away_now"] else 0)
-        attempts.append(a)
+    questions, attempts = attempt_rows(t)
     return {"t": t, "questions": questions, "attempts": attempts, "link": request.host_url + "t/" + t["code"]}
+
+
+@view("/tests/<int:tid>/attempts/<int:aid>/mark", method="POST")
+def test_mark(me, tid, aid):
+    """Учитель ставит ✓ или ✗ за ответ: развёрнутый оценивает только он, автоматическую отметку может поправить."""
+    t, d = own_test(me, tid), body()
+    a = q1("SELECT id, marks FROM attempts WHERE id=? AND test_id=?", aid, t["id"]) or abort(404)
+    n = as_int(d, "q")
+    if n is None or not 0 <= n < len(json.loads(t["questions"])) or d.get("mark") not in ("1", "0", ""):
+        abort(400)
+    marks = json.loads(a["marks"] or "{}")
+    if d["mark"] == "":
+        marks.pop(str(n), None)
+    else:
+        marks[str(n)] = d["mark"] == "1"
+    run("UPDATE attempts SET marks=? WHERE id=?", json.dumps(marks), aid)
+    return done(f"/tests/{tid}#a{aid}")
+
+
+@view("/tests/<int:tid>/results")
+def test_results(me, tid):
+    """Результаты одной таблицей Excel: перенести оценки в электронный дневник."""
+    t = own_test(me, tid)
+    _questions, attempts = attempt_rows(t)
+    tr = lambda text: translate(text, lang())
+    rows = [[tr("Ученик"), tr("Баллы"), tr("Из"), tr("Не оценено"), tr("Уходил со вкладки"), tr("Не на вкладке, сек."),
+             tr("Копировать или вставить"), tr("Начал"), tr("Минут на тест")]]
+    for a in attempts:
+        rows.append([a["student"], int(a["score"]), int(a["total"]), int(a["unmarked"]), int(a["away_count"]),
+                     int(a["away"]), int(a["copy_tries"]), fmt_dt(a["started_at"]),
+                     int((a["finished_at"] - a["started_at"]) // 60) if a["finished_at"] else ""])
+    name = re.sub(r'[\\/:*?"<>|]+', " ", t["title"]).strip()[:80] or "test"
+    return send_file(io.BytesIO(export.xlsx(rows)), as_attachment=True, download_name=f"{name}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @view("/tests/<int:tid>/qr.svg")
@@ -2787,8 +2898,8 @@ def take_begin(code):
     if not used(f"test:{request.remote_addr}", 3600, TEST_STARTS_PER_HOUR):
         return translate("Слишком много попыток с этого адреса. Попробуйте через час", lang()), 429
     token = secrets.token_urlsafe(24)
-    run("INSERT INTO attempts(test_id,token,student,started_at) VALUES(?,?,?,?)", t["id"], token_hash(token), name,
-        time.time())
+    run("INSERT INTO attempts(test_id,token,student,started_at,orders) VALUES(?,?,?,?,?)", t["id"], token_hash(token),
+        name, time.time(), json.dumps(shuffled(json.loads(t["questions"]))))
     return redirect(f"/t/{code}/{token}")
 
 
@@ -2796,9 +2907,16 @@ def take_begin(code):
 def take_test(code, token):
     t = open_test(code)
     a = attempt_of(t, token)
-    questions = [{k: q[k] for k in ("q", "kind", "options")} for q in json.loads(t["questions"])]  # без ответов
+    every = json.loads(t["questions"])
+    order = json.loads(a["orders"] or "{}") or {"q": list(range(len(every))), "o": {}}
+    questions = []
+    for n in order["q"]:  # в порядке этого ученика; поле ответа хранит исходный номер вопроса
+        q = every[n]
+        opts = order["o"].get(str(n)) or range(len(q["options"]))
+        questions.append({"n": n, "q": q["q"], "kind": q["kind"], "options": [q["options"][i] for i in opts]})  # без ответов
+    left = max(0, int(a["started_at"] + t["minutes"] * 60 - time.time())) if t["minutes"] else None
     return render_template("take.html", t=t, step="done" if a["finished_at"] else "test", questions=questions,
-                           closed=not t["open"])
+                           closed=not t["open"], left=left)
 
 
 @app.post("/t/<code>/<token>/away")
@@ -2851,6 +2969,7 @@ def template_globals():
 if __name__ != "__main__":  # под gunicorn: учитель из настроек и задачи, оборванные перезапуском
     ensure_teacher()
     resume_jobs()
+    threading.Thread(target=backup_daily, daemon=True).start()
 
 if __name__ == "__main__":
     if "--ping" in sys.argv:  # проверка ключа API: один короткий запрос, стоит доли цента
@@ -2867,10 +2986,7 @@ if __name__ == "__main__":
         sys.exit()
     if "--backup" in sys.argv:  # копия базы, безопасная при работающем сервере: python app.py --backup [папка]
         rest = [a for a in sys.argv[1:] if not a.startswith("--")]
-        target = os.path.join(rest[0] if rest else os.path.dirname(DB), time.strftime("backup-%Y%m%d-%H%M%S.db"))
-        with connect() as src, sqlite3.connect(target) as dst:
-            src.backup(dst)
-        print("копия базы:", target)
+        print("копия базы:", backup(rest[0] if rest else None))
         sys.exit()
     if "--check" in sys.argv:
         import docx_read as _dr
@@ -2895,5 +3011,6 @@ if __name__ == "__main__":
     if not local or os.environ.get("WERKZEUG_RUN_MAIN") == "true":  # при автоперезагрузке код грузится дважды
         ensure_teacher()
         resume_jobs()
+        threading.Thread(target=backup_daily, daemon=True).start()
     # отладчик Werkzeug не включаем никогда: через туннель на 127.0.0.1 он отдал бы любому консоль этого компьютера
     app.run(debug=False, use_reloader=local, host=host, port=int(os.environ.get("PORT", 8000)))

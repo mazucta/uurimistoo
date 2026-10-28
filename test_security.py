@@ -732,6 +732,44 @@ ok("тест: учитель видит результат, чужой учит�
 qr = c.get(f"/api/tests/{tid}/qr.svg", headers=H)
 ok("тест: QR-код ссылки отдаётся учителю, чужим нет", qr.status_code == 200 and qr.mimetype == "image/svg+xml"
    and b"<svg" in qr.data and A.app.test_client().get(f"/tests/{tid}/qr.svg").status_code == 302)
+# отметка учителя: развёрнутый ответ засчитан, итог 3 из 3; «как было» возвращает
+aid = seen["attempts"][0]["id"]
+c.post(f"/api/tests/{tid}/attempts/{aid}/mark", headers=H, json={"q": "2", "mark": "1"})
+after = c.get(f"/api/tests/{tid}", headers=H).json["attempts"][0]
+c.post(f"/api/tests/{tid}/attempts/{aid}/mark", headers=H, json={"q": "2", "mark": ""})
+back = c.get(f"/api/tests/{tid}", headers=H).json["attempts"][0]
+bad = c.post(f"/api/tests/{tid}/attempts/{aid}/mark", headers=H, json={"q": "9", "mark": "1"}).status_code
+ok("тест: учитель засчитывает развёрнутый ответ и может вернуть как было", (after["score"], after["total"], after["unmarked"])
+   == (3, 3, 0) and (back["score"], back["total"], back["unmarked"]) == (2, 2, 1) and bad == 400, repr(after))
+xl = c.get(f"/api/tests/{tid}/results", headers=H)
+import zipfile as _zf, io as _io2
+sheet = _zf.ZipFile(_io2.BytesIO(xl.data)).read("xl/worksheets/sheet1.xml").decode()
+ok("тест: результаты выгружаются в Excel", xl.status_code == 200 and "Іван Петренко" in sheet, xl.status_code)
+# перемешивание: порядок свой у ученика, ответ пишется под исходным номером
+orders = [_json.loads(r[0]) for r in A.connect().execute("SELECT orders FROM attempts WHERE test_id=?", (tid,))]
+ok("тест: у попытки свой порядок вопросов и вариантов", all(sorted(o["q"]) == [0, 1, 2] and sorted(o["o"]["0"]) == [0, 1]
+                                                            for o in orders), repr(orders))
+# таймер: тест на 1 минуту показывает остаток, сдача после лимита помечена
+con = A.connect()
+tq = con.execute("INSERT INTO tests(teacher_id,code,title,questions,minutes,created_at) VALUES(1,'timed1','T',?,1,1)",
+                 (_json.dumps([{"q": "a", "kind": "short", "options": [], "answer": "b"}]),)).lastrowid
+con.commit(); con.close()
+tk = A.app.test_client(); turl = tk.post("/t/timed1", data={"student": "Повільний"}).headers["Location"]
+timed_page = tk.get(turl).text
+con = A.connect(); con.execute("UPDATE attempts SET started_at=started_at-200 WHERE test_id=?", (tq,)); con.commit(); con.close()
+tk.post(turl, data={"a0": "b"})
+late_row = c.get(f"/api/tests/{tq}", headers=H).json["attempts"][0]
+ok("тест: таймер на странице, сдача после лимита помечена", 'data-left="' in timed_page and late_row["late"], late_row["late"])
+# резервная копия: зашифрованная копия базы, владельцу скачивается, остальным нет
+_bdir = tempfile.mkdtemp()
+_copy = A.backup(_bdir)
+_raw = open(_copy, "rb").read()
+ok("копия базы: создаётся, права 600, имён учеников открытым текстом нет", os.stat(_copy).st_mode & 0o777 == 0o600
+   and "Іван Петренко".encode() not in _raw and len(_raw) > 0)
+A.TEACHER_LOGIN = "lisa"
+lisa_h = {"Authorization": "Bearer " + c.post("/api/login", json={"login": "lisa", "password": "vtoroi-parol"}).json["token"]}
+ok("копия базы: скачивает только владелец", c.get("/api/backup", headers=lisa_h).status_code == 200
+   and c.get("/api/backup", headers=H).status_code == 404)
 c.post(f"/api/tests/{tid}/open", headers=H, json={})
 late = A.app.test_client().post(f"/t/{code}", data={"student": "Запізнився"})
 ok("тест: закрытый не принимает новых", late.status_code == 400 and "Тест закрит" in late.text, late.status_code)
