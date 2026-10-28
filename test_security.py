@@ -729,6 +729,9 @@ other = c.get(f"/api/tests/{tid}", headers={"Authorization": "Bearer " + c.post(
     json={"login": "lisa", "password": "vtoroi-parol"}).json["token"]})
 ok("тест: учитель видит результат, чужой учитель — нет", seen["attempts"][0]["score"] == 2
    and seen["link"].endswith("/t/" + code) and other.status_code == 404)
+qr = c.get(f"/api/tests/{tid}/qr.svg", headers=H)
+ok("тест: QR-код ссылки отдаётся учителю, чужим нет", qr.status_code == 200 and qr.mimetype == "image/svg+xml"
+   and b"<svg" in qr.data and A.app.test_client().get(f"/tests/{tid}/qr.svg").status_code == 302)
 c.post(f"/api/tests/{tid}/open", headers=H, json={})
 late = A.app.test_client().post(f"/t/{code}", data={"student": "Запізнився"})
 ok("тест: закрытый не принимает новых", late.status_code == 400 and "Тест закрит" in late.text, late.status_code)

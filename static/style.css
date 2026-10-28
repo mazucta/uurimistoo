@@ -425,3 +425,5 @@ a.stat.ring-tile { align-items: center; text-align: center; gap: 6px; }
 .answers .good { color: var(--ok); }
 .answers li { margin-bottom: 8px; }
 .banner input.share { margin-top: 6px; font-size: 14px; background: var(--card); width: 100%; }
+.qr { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.qr img { background: #fff; border-radius: 8px; display: block; }

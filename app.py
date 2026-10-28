@@ -12,6 +12,7 @@ from flask import Flask, g, request, render_template, abort, redirect, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 import vault
 import anthropic
+import segno
 import docx_read, export, images, originality, pdf_read, rubric, source_pdf
 from i18n import LANGS, translate
 
@@ -2734,6 +2735,14 @@ def test_page(me, tid):
         a["away"] = a["away_seconds"] + (time.time() - a["away_since"] if a["away_now"] else 0)
         attempts.append(a)
     return {"t": t, "questions": questions, "attempts": attempts, "link": request.host_url + "t/" + t["code"]}
+
+
+@view("/tests/<int:tid>/qr.svg")
+def test_qr(me, tid):
+    """QR-код ссылки теста: показать классу на экране или распечатать."""
+    buf = io.BytesIO()
+    segno.make(request.host_url + "t/" + own_test(me, tid)["code"], error="m").save(buf, kind="svg", scale=10, border=2)
+    return send_file(io.BytesIO(buf.getvalue()), mimetype="image/svg+xml")
 
 
 @view("/tests/<int:tid>/open", method="POST")
