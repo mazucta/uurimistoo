@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ t.title }}{% endblock %}
+{% block main %}
+<div class="take">
+<h1>{{ t.title }}</h1>
+{% if step == 'done' %}
+  <div class="banner ok">{{ _('Ответы отправлены. Спасибо!') }}</div>
+{% elif step == 'name' and closed %}
+  <div class="banner warn">{{ _('Тест закрыт.') }}</div>
+{% elif step == 'name' %}
+  <form class="card" method="post">
+    <label>{{ _('Ваше имя и фамилия') }}<br><input name="student" maxlength="80" required autocomplete="name"></label>
+    <p class="muted small">{{ _('Во время теста не уходите со вкладки: учитель видит, сколько раз и как долго вас не было на странице. Копировать и вставлять текст нельзя.') }}</p>
+    <button class="btn primary">{{ _('Начать тест') }}</button>
+  </form>
+{% else %}
+  <form class="no-copy" method="post" id="testForm">
+    {% for q in questions %}
+    <fieldset class="card">
+      <legend><b>{{ loop.index }}. {{ q.q }}</b></legend>
+      {% set n = loop.index0 %}
+      {% if q.kind == 'choice' and q.options %}
+        {% for o in q.options %}<label class="choice"><input type="radio" name="a{{ n }}" value="{{ o }}"> {{ o }}</label>{% endfor %}
+      {% elif q.kind == 'short' %}
+        <input name="a{{ n }}" maxlength="300" autocomplete="off" aria-label="{{ _('Ответ') }}">
+      {% else %}
+        <textarea name="a{{ n }}" rows="4" maxlength="3000" aria-label="{{ _('Ответ') }}"></textarea>
+      {% endif %}
+    </fieldset>
+    {% endfor %}
+    <button class="btn primary big">{{ _('Отправить ответы') }}</button>
+  </form>
+  <script>
+  (() => {
+    const url = location.pathname + '/away'
+    const tell = data => fetch(url, {method: 'POST', keepalive: true, headers: {'Content-Type': 'application/json'},
+                                     body: JSON.stringify(data)}).catch(() => {})
+    let away = false, asking = false  // окно «Отправить?» браузер считает уходом с вкладки: его не учитываем
+    const go = hidden => { if (!asking && hidden !== away) { away = hidden; tell({state: hidden ? 'hidden' : 'visible'}) } }
+    document.addEventListener('visibilitychange', () => go(document.hidden))
+    window.addEventListener('blur', () => go(true))   // другое окно поверх теста, вкладка при этом видна
+    window.addEventListener('focus', () => go(false))
+    for (const kind of ['copy', 'cut', 'paste']) {
+      document.addEventListener(kind, e => { e.preventDefault(); tell({copy: 1}) })
+    }
+    document.addEventListener('contextmenu', e => e.preventDefault())
+    document.addEventListener('dragstart', e => e.preventDefault())
+    document.getElementById('testForm').addEventListener('submit', e => {
+      asking = true
+      if (!confirm({{ _('Отправить ответы? Изменить их потом нельзя.')|tojson }})) e.preventDefault()
+      setTimeout(() => { asking = false }, 500)
+    })
+  })()
+  </script>
+{% endif %}
+</div>
+{% endblock %}

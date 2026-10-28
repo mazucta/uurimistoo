@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Тесты') }}{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div><h1>{{ _('Тесты') }}</h1>
+    <p class="muted">{{ _('Онлайн-тест из готовых вопросов: ученики проходят его по ссылке, а вы видите баллы, уходы со вкладки и попытки копировать.') }}</p></div>
+</div>
+
+<section class="card">
+  <div class="card-head"><h2>{{ _('Новый тест') }}</h2></div>
+  {% if sources %}
+  <form class="rule-form" method="post" action="/tests">
+    <select name="material" aria-label="{{ _('Вопросы для теста') }}" required>
+      {% for m in sources %}<option value="{{ m.id }}">{{ m.topic }} · {{ _('Квиз для Kahoot') if m.kind == 'kahoot' else _('Проверочные вопросы') }}</option>{% endfor %}
+    </select>
+    <button class="btn primary">{{ _('Создать тест') }}</button>
+  </form>
+  {% else %}
+  <p class="muted">{{ _('Сначала подготовьте в «Материалах к уроку» проверочные вопросы или квиз для Kahoot: из них делается тест.') }}
+    <a href="/materials">{{ _('Материалы к уроку') }}</a></p>
+  {% endif %}
+</section>
+
+{% if tests %}
+<section class="card">
+  <div class="scroll"><table class="t">
+    <tr><th>{{ _('Тест') }}</th><th>{{ _('Создан') }}</th><th>{{ _('Прошли') }}</th><th>{{ _('Статус') }}</th></tr>
+    {% for t in tests %}
+    <tr><td><a href="/tests/{{ t.id }}">{{ t.title }}</a></td><td>{{ t.created_at|dt }}</td><td>{{ t.n }}</td>
+      <td>{{ _('открыт') if t.open else _('закрыт') }}</td></tr>
+    {% endfor %}
+  </table></div>
+</section>
+{% endif %}
+{% endblock %}

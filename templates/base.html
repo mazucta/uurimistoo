@@ -18,6 +18,7 @@
   {% if me %}<nav class="nav">
     <a class="{{ 'on' if request.path.startswith('/papers') }}" href="/papers">{{ _('Проверки работ') }}</a>
     <a class="{{ 'on' if request.path.startswith('/materials') }}" href="/materials">{{ _('Материалы к уроку') }}</a>
+    <a class="{{ 'on' if request.path.startswith('/tests') }}" href="/tests">{{ _('Тесты') }}</a>
   </nav>{% endif %}
   <div class="me">
     <span class="langs">{% for code in langs %}<a class="{{ 'on' if code == lang }}" href="?lang={{ code }}">{{ code|upper }}</a>{% endfor %}</span>

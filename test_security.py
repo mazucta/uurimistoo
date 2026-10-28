@@ -692,6 +692,49 @@ left = {r[0] for r in con.execute("SELECT id FROM uploads WHERE id IN (?,?)", (k
 con.close()
 ok("срок хранения не стирает картинки готового материала", left == {kept}, repr(left))
 
+# Тесты для учеников: из готовых вопросов, ссылка без аккаунта, баллы, уходы со вкладки, копирование
+import json as _json
+con = A.connect()
+quiz = con.execute("INSERT INTO materials(teacher_id,kind,topic,status,content,created_at) VALUES(1,'quiz','Фотосинтез','done',?,1)",
+                   (_json.dumps({"questions": [
+                       {"question": "Що поглинає рослина?", "kind": "choice", "options": ["CO2", "O2"], "answer": "CO2", "level": "easy"},
+                       {"question": "Де йде фотосинтез?", "kind": "short", "options": [], "answer": "Хлоропласти", "level": "easy"},
+                       {"question": "Чому листя зелене?", "kind": "open", "options": [], "answer": "хлорофіл", "level": "hard"}]}),)).lastrowid
+con.commit(); con.close()
+made = c.post("/api/tests", headers=H, json={"material": quiz}).json
+tid = made["id"]
+code = A.connect().execute("SELECT code FROM tests WHERE id=?", (tid,)).fetchone()[0]
+kid = A.app.test_client()
+start = kid.post(f"/t/{code}", data={"student": "  Іван   Петренко "})
+page_url = start.headers["Location"]
+page = kid.get(page_url).text
+ok("тест: ученик входит по ссылке без аккаунта, правильных ответов на странице нет", start.status_code == 302
+   and "Що поглинає рослина?" in page and "Хлоропласти" not in page and "хлорофіл" not in page)
+kid.post(page_url + "/away", json={"state": "hidden"}); kid.post(page_url + "/away", json={"state": "hidden"})
+_c = A.connect(); _c.execute("UPDATE attempts SET away_since=away_since-5 WHERE test_id=?", (tid,)); _c.commit(); _c.close()
+kid.post(page_url + "/away", json={"state": "visible"}); kid.post(page_url + "/away", json={"copy": 1})
+kid.post(page_url, data={"a0": "CO2", "a1": "хлоропласти!", "a2": "бо хлорофіл"})
+kid.post(page_url + "/away", json={"state": "hidden"})  # после сдачи уже не считается
+again = kid.post(page_url, data={"a0": "O2", "a1": "", "a2": ""})
+row = A.connect().execute("SELECT student, score, total, away_count, away_seconds, copy_tries, answers FROM attempts "
+                          "WHERE test_id=?", (tid,)).fetchone()
+ok("тест: баллы сами за выбор и короткий ответ, уходы и копирование посчитаны, пересдать нельзя",
+   tuple(row)[:4] == ("Іван Петренко", 2, 2, 1) and row[4] >= 5 and row[5] == 1 and "CO2" in row[6]
+   and again.status_code == 302, repr(tuple(row)))
+raw = A.connect(); raw.row_factory = None
+sealed = raw.execute("SELECT student, answers FROM attempts WHERE test_id=?", (tid,)).fetchone()
+ok("тест: имя ученика и ответы лежат зашифрованными", all(str(v).startswith("enc1:") for v in sealed), repr(sealed))
+seen = c.get(f"/api/tests/{tid}", headers=H).json
+other = c.get(f"/api/tests/{tid}", headers={"Authorization": "Bearer " + c.post("/api/login",
+    json={"login": "lisa", "password": "vtoroi-parol"}).json["token"]})
+ok("тест: учитель видит результат, чужой учитель — нет", seen["attempts"][0]["score"] == 2
+   and seen["link"].endswith("/t/" + code) and other.status_code == 404)
+c.post(f"/api/tests/{tid}/open", headers=H, json={})
+late = A.app.test_client().post(f"/t/{code}", data={"student": "Запізнився"})
+ok("тест: закрытый не принимает новых", late.status_code == 400 and "Тест закрит" in late.text, late.status_code)
+ok("тест: чужая ссылка и чужая попытка 404", A.app.test_client().get("/t/nema").status_code == 404
+   and kid.get(f"/t/{code}/chuzhyi-token").status_code == 404)
+
 # SEC-07 и SEC-04
 resp = c.get(f"/api/papers/{pid}", headers=H)
 ok("SEC-07 у отчёта Cache-Control: no-store", resp.headers.get("Cache-Control") == "no-store")

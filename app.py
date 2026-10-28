@@ -106,6 +106,14 @@ CREATE TABLE IF NOT EXISTS canva_tokens(
 CREATE TABLE IF NOT EXISTS lessons(
   id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id), paper_id INTEGER NOT NULL,
   paper_at REAL NOT NULL, lines TEXT NOT NULL, at REAL NOT NULL, UNIQUE(paper_id, paper_at));
+CREATE TABLE IF NOT EXISTS tests(
+  id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL REFERENCES users(id), code TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL, questions TEXT NOT NULL, open INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS attempts(
+  id INTEGER PRIMARY KEY, test_id INTEGER NOT NULL REFERENCES tests(id), token TEXT NOT NULL UNIQUE,
+  student TEXT NOT NULL, answers TEXT NOT NULL DEFAULT '', score INTEGER, total INTEGER NOT NULL DEFAULT 0,
+  away_count INTEGER NOT NULL DEFAULT 0, away_seconds REAL NOT NULL DEFAULT 0, away_since REAL,
+  copy_tries INTEGER NOT NULL DEFAULT 0, started_at REAL NOT NULL, finished_at REAL);
 CREATE TABLE IF NOT EXISTS canva_states(
   state TEXT PRIMARY KEY, user_id INTEGER NOT NULL, verifier TEXT NOT NULL, next TEXT NOT NULL, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS findings(
@@ -1388,6 +1396,7 @@ def purge_old(con):
         old = time.time() - RETENTION_DAYS * 86400
         con.execute("DELETE FROM findings WHERE paper_id IN (SELECT id FROM papers WHERE uploaded_at < ?)", (old,))
         con.execute("DELETE FROM papers WHERE uploaded_at < ?", (old,))
+        con.execute("DELETE FROM attempts WHERE started_at < ?", (old,))  # ответы учеников на тесты тоже
         # файлы готовых материалов живут вместе с материалом: иначе у него пропадут картинки
         con.execute("DELETE FROM uploads WHERE created_at < ? AND library=0 AND material_id IS NULL", (old,))
     # приложения, которые так и не попали в материал (разговор бросили), держим сутки
@@ -2644,9 +2653,185 @@ app.template_filter("nonum")(export.nonum)
 app.template_filter("unquote")(__import__("urllib.parse").parse.unquote)  # адрес найденной страницы читаемым
 
 
+# ---------- тесты для учеников ----------
+# Учитель делает онлайн-тест из готовых вопросов (материал «Проверочные вопросы» или квиз Kahoot) и даёт классу
+# ссылку. Ученик входит по ссылке без аккаунта, пишет имя и отвечает. Учитель видит баллы, сколько раз и сколько
+# времени ученик был не на вкладке теста и сколько раз пытался копировать или вставлять.
+# ponytail: уход со вкладки и запрет копирования ловит браузер; второй телефон или фото экрана так не поймать.
+TEST_STARTS_PER_HOUR = 60  # учеников с одного адреса в час: в классе все сидят за одним школьным адресом
+
+
+def test_questions(m):
+    """Вопросы материала в одном виде: q, kind (choice, short, open), options, answer."""
+    data = json.loads(m["content"] or "{}")
+    out = []
+    for x in data.get("questions") or []:
+        if m["kind"] == "kahoot":
+            options = [str(a) for a in x.get("answers") or []]
+            n = x.get("correct") or 0
+            out.append({"q": x.get("question", ""), "kind": "choice", "options": options,
+                        "answer": options[n - 1] if 0 < n <= len(options) else ""})
+        else:
+            out.append({"q": x.get("question", ""), "kind": x.get("kind") if x.get("kind") in ("choice", "short", "open")
+                        else "open", "options": [str(o) for o in x.get("options") or []], "answer": x.get("answer", "")})
+    return [x for x in out if x["q"]]
+
+
+def plain(text):
+    return re.sub(r"[\W_]+", " ", str(text or "")).strip().casefold()
+
+
+def score_test(questions, answers):
+    """Баллы за то, что проверяется само: выбор и короткий ответ. Развёрнутый ответ оценивает учитель."""
+    marks, score, total = [], 0, 0
+    for i, q in enumerate(questions):
+        given = answers[i] if i < len(answers) else ""
+        right = None
+        if q["kind"] in ("choice", "short") and q["answer"]:
+            right = plain(given) == plain(q["answer"]) and bool(plain(given))
+            score, total = score + right, total + 1
+        marks.append(right)
+    return score, total, marks
+
+
+def own_test(me, tid):
+    return q1("SELECT * FROM tests WHERE id=? AND teacher_id=?", tid, me["id"]) or abort(404)
+
+
+@view("/tests", "tests.html")
+def tests_page(me):
+    tests = [dict(t) for t in db().execute(
+        "SELECT t.*, (SELECT COUNT(*) FROM attempts WHERE test_id=t.id) AS n FROM tests t WHERE teacher_id=? "
+        "ORDER BY created_at DESC", (me["id"],))]
+    sources = [dict(m) for m in db().execute(
+        "SELECT id, topic, kind FROM materials WHERE teacher_id=? AND status='done' AND kind IN ('quiz','kahoot') "
+        "ORDER BY created_at DESC", (me["id"],))]
+    return {"tests": tests, "sources": sources}
+
+
+@view("/tests", method="POST")
+def test_create(me):
+    m = q1("SELECT * FROM materials WHERE id=? AND teacher_id=? AND kind IN ('quiz','kahoot') AND status='done'",
+           as_int(body(), "material"), me["id"]) or abort(404)
+    questions = test_questions(m)
+    if not questions:
+        abort(400)
+    tid = run("INSERT INTO tests(teacher_id,code,title,questions,created_at) VALUES(?,?,?,?,?)", me["id"],
+              secrets.token_urlsafe(9), m["topic"], json.dumps(questions, ensure_ascii=False), time.time()).lastrowid
+    return done(f"/tests/{tid}", id=tid)
+
+
+@view("/tests/<int:tid>", "test.html")
+def test_page(me, tid):
+    t = own_test(me, tid)
+    questions = json.loads(t["questions"])
+    attempts = []
+    for a in db().execute("SELECT * FROM attempts WHERE test_id=? ORDER BY started_at DESC", (tid,)):
+        a = dict(a)
+        a["answers"] = json.loads(a["answers"] or "[]")
+        a["marks"] = score_test(questions, a["answers"])[2]
+        a["away_now"] = bool(a["away_since"]) and not a["finished_at"]
+        a["away"] = a["away_seconds"] + (time.time() - a["away_since"] if a["away_now"] else 0)
+        attempts.append(a)
+    return {"t": t, "questions": questions, "attempts": attempts, "link": request.host_url + "t/" + t["code"]}
+
+
+@view("/tests/<int:tid>/open", method="POST")
+def test_toggle(me, tid):
+    run("UPDATE tests SET open=1-open WHERE id=?", own_test(me, tid)["id"])
+    return done(f"/tests/{tid}")
+
+
+@view("/tests/<int:tid>/delete", method="POST")
+def test_delete(me, tid):
+    own_test(me, tid)
+    with db():
+        db().execute("DELETE FROM attempts WHERE test_id=?", (tid,))
+        db().execute("DELETE FROM tests WHERE id=?", (tid,))
+    return done("/tests")
+
+
+def open_test(code):
+    t = q1("SELECT * FROM tests WHERE code=?", code)
+    if not t:
+        abort(404)
+    return t
+
+
+def attempt_of(t, token):
+    a = q1("SELECT * FROM attempts WHERE test_id=? AND token=?", t["id"], token_hash(token))
+    return a or abort(404)
+
+
+@app.get("/t/<code>")
+def take_start(code):
+    t = open_test(code)
+    return render_template("take.html", t=t, step="name", closed=not t["open"])
+
+
+@app.post("/t/<code>")
+def take_begin(code):
+    t = open_test(code)
+    name = " ".join(str(request.form.get("student") or "").split())[:80]
+    if not t["open"] or not name:
+        return render_template("take.html", t=t, step="name", closed=not t["open"]), 400
+    if not used(f"test:{request.remote_addr}", 3600, TEST_STARTS_PER_HOUR):
+        return translate("Слишком много попыток с этого адреса. Попробуйте через час", lang()), 429
+    token = secrets.token_urlsafe(24)
+    run("INSERT INTO attempts(test_id,token,student,started_at) VALUES(?,?,?,?)", t["id"], token_hash(token), name,
+        time.time())
+    return redirect(f"/t/{code}/{token}")
+
+
+@app.get("/t/<code>/<token>")
+def take_test(code, token):
+    t = open_test(code)
+    a = attempt_of(t, token)
+    questions = [{k: q[k] for k in ("q", "kind", "options")} for q in json.loads(t["questions"])]  # без ответов
+    return render_template("take.html", t=t, step="done" if a["finished_at"] else "test", questions=questions,
+                           closed=not t["open"])
+
+
+@app.post("/t/<code>/<token>/away")
+def take_away(code, token):
+    """Ученик ушёл со вкладки или вернулся, пытался копировать. Время считает сервер, а не браузер ученика."""
+    a = attempt_of(open_test(code), token)
+    if a["finished_at"]:
+        return {"ok": True}
+    d, now = request.get_json(silent=True) or {}, time.time()
+    if d.get("state") == "hidden" and not a["away_since"]:
+        run("UPDATE attempts SET away_since=?, away_count=away_count+1 WHERE id=?", now, a["id"])
+    elif d.get("state") == "visible" and a["away_since"]:
+        run("UPDATE attempts SET away_seconds=away_seconds+?, away_since=NULL WHERE id=?", now - a["away_since"], a["id"])
+    if d.get("copy"):
+        run("UPDATE attempts SET copy_tries=copy_tries+1 WHERE id=?", a["id"])
+    return {"ok": True}
+
+
+@app.post("/t/<code>/<token>")
+def take_finish(code, token):
+    t = open_test(code)
+    a = attempt_of(t, token)
+    if not a["finished_at"]:
+        questions = json.loads(t["questions"])
+        answers = [str(request.form.get(f"a{i}") or "")[:3000] for i in range(len(questions))]
+        score, total, _marks = score_test(questions, answers)
+        now = time.time()
+        run("UPDATE attempts SET answers=?, score=?, total=?, finished_at=?, away_seconds=away_seconds+?, away_since=NULL "
+            "WHERE id=?", json.dumps(answers, ensure_ascii=False), score, total, now,
+            now - a["away_since"] if a["away_since"] else 0, a["id"])
+    return redirect(f"/t/{code}/{token}")
+
+
 @app.template_filter("dt")
 def fmt_dt(ts):
     return time.strftime("%d.%m %H:%M", time.localtime(ts)) if ts else "—"
+
+
+@app.template_filter("span")
+def fmt_span(seconds):
+    seconds = int(seconds or 0)
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 @app.context_processor

@@ -414,3 +414,14 @@ a.stat.ring-tile { align-items: center; text-align: center; gap: 6px; }
 .ring-tile:has(.ring.warn) .ring-note i { color: var(--warn); }
 .ring-tile:has(.ring.bad) .ring-note i { color: var(--bad); }
 @media print { .ring { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+/* тест для учеников */
+.take { max-width: 760px; margin: 24px auto; }
+.take fieldset { border: 1px solid var(--line); }
+.take .choice { display: block; padding: 6px 0; }
+.take textarea, .take input[name^="a"] { width: 100%; }
+.no-copy { -webkit-user-select: none; user-select: none; }
+.no-copy input, .no-copy textarea { -webkit-user-select: text; user-select: text; }
+.t td.bad, .answers .bad { color: var(--red); }
+.answers .good { color: var(--ok); }
+.answers li { margin-bottom: 8px; }
+.banner input.share { margin-top: 6px; font-size: 14px; background: var(--card); width: 100%; }
